@@ -6,8 +6,7 @@
 #include <string>
 #include <random>
 #include <iostream>
-#include <random>
-
+#include <sstream>
 
 struct MemAccess {
     uint64_t addr;
@@ -19,7 +18,11 @@ struct MemAccess {
 };
 
 using RegMap = std::map<int, uint64_t>;
-
+std::string hex_str(uint64_t val) {
+    std::stringstream ss;
+    ss << std::hex << val;
+    return ss.str();
+}
 class Simulator {
 public:
     std::vector<MemAccess> mem_accesses;
