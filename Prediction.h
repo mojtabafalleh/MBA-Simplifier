@@ -13,6 +13,7 @@ enum class Operation {
 struct Operand {
     enum class Type { REG, MEM, IMM } type;
     std::string reg;   
+    int id;
     uint64_t imm = 0;  
     std::string mem;   
 
@@ -55,7 +56,7 @@ public:
             switch (o.type) {
             case Operand::Type::REG: std::cout << o.reg; break;
             case Operand::Type::IMM: std::cout << "0x" << std::hex << o.imm; break;
-            case Operand::Type::MEM: std::cout << o.mem; break;
+            case Operand::Type::MEM: std::cout << "[mem " + std::to_string(o.id) + "]"; break;
             }
             };
 
@@ -115,7 +116,8 @@ class PredictionList {
 public:
     void add(const Prediction& p) {
         for (auto& existing : preds) {
-            if (existing.dest.reg == p.dest.reg && existing.dest.type == p.dest.type) {
+
+            if ( existing.dest.reg == p.dest.reg && existing.dest.type == p.dest.type) {
                 existing = p;
                 return;
             }
