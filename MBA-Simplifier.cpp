@@ -60,7 +60,17 @@ int main(int argc, char** argv) {
                 closest_reg = r_id;
             }
         }
-
+        for (auto& [reg_id, final_val] : final_regs) {
+            if (final_val == m.value) {
+                Prediction reg_pred;
+                reg_pred.dest.type = Operand::Type::REG;
+                reg_pred.dest.reg = Simulator::reg_name(reg_id);
+                reg_pred.src.type = Operand::Type::MEM;
+                reg_pred.src.id = memory_count;
+                reg_pred.op = Operation::NONE;
+                predictions.add(reg_pred);
+            }
+        }
         if (closest_reg != -1) {
             p.dest.type = Operand::Type::MEM;
             p.dest.id = memory_count;

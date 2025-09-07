@@ -87,27 +87,25 @@ public:
 
  
     void update_guess(const RegMap& test_regs, const RegMap& test_final) {
+        uint64_t target = test_final.at(dest_id());
 
-            uint64_t target = test_final.at(dest_id());
-
-                uint64_t min_offset = UINT64_MAX;
-                int closest_reg = -1;
-                for (auto& [reg_id, val] : test_regs) {
-                    uint64_t diff = (target > val) ? (target - val) : (val - target);
-                    if (diff < min_offset) {
-                        min_offset = diff;
-                        closest_reg = reg_id;
-                    }
-                }
-                if (closest_reg != -1) {
-                    src.type = Operand::Type::REG;
-                    src.reg = Simulator::reg_name(closest_reg);
-                    src.imm = min_offset;
-                    op = (target > test_regs.at(closest_reg)) ? Operation::ADD : Operation::SUB;
-                }
-            
-        
+        uint64_t min_offset = UINT64_MAX;
+        int closest_reg = -1;
+        for (auto& [reg_id, val] : test_regs) {
+            uint64_t diff = (target > val) ? (target - val) : (val - target);
+            if (diff < min_offset) {
+                min_offset = diff;
+                closest_reg = reg_id;
+            }
+        }
+        if (closest_reg != -1) {
+            src.type = Operand::Type::REG;
+            src.reg = Simulator::reg_name(closest_reg);
+            src.imm = min_offset;
+            op = (target > test_regs.at(closest_reg)) ? Operation::ADD : Operation::SUB;
+        }
     }
+
 };
 
 class PredictionList {
@@ -115,13 +113,6 @@ class PredictionList {
 
 public:
     void add(const Prediction& p) {
-        for (auto& existing : preds) {
-
-            if ( existing.dest.reg == p.dest.reg && existing.dest.type == p.dest.type) {
-                existing = p;
-                return;
-            }
-        }
         preds.push_back(p);
     }
 
