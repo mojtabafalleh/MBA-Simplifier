@@ -12,7 +12,7 @@ endif()
 project ("MBA-Simplifier")
 
 # Add source to this project's executable.
-add_executable (MBA-Simplifier "MBA-Simplifier.cpp" "simulator.h")
+add_executable (MBA-Simplifier "MBA-Simplifier.cpp" "simulator.h" "Prediction.h")
 
 if (CMAKE_VERSION VERSION_GREATER 3.12)
   set_property(TARGET MBA-Simplifier PROPERTY CXX_STANDARD 20)
