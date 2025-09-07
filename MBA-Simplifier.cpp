@@ -60,14 +60,23 @@ int main(int argc, char** argv) {
 
         std::cout << "Run " << k + 1 << ":\n";
 
-        for (auto& p : predictions.get_all()) { 
+        for (auto& p : predictions.get_all()) {
             bool correct = false;
+            uint64_t dest_val = test_final.at(p.dest_id());
 
-            if (p.has_imm) {
-                if (test_final.at(p.dest_id()) == p.imm) correct = true;
+            if (!p.src_reg.empty() && p.has_imm) {
+                // dest = src (+/-) imm
+                uint64_t src_val = test_regs.at(p.src_id());
+                if (p.op == Operation::ADD && dest_val == src_val + p.imm) correct = true;
+                else if (p.op == Operation::SUB && dest_val == src_val - p.imm) correct = true;
+            }
+            else if (p.has_imm) {
+                // dest = imm
+                if (dest_val == p.imm) correct = true;
             }
             else if (!p.src_reg.empty()) {
-                if (test_final.at(p.dest_id()) == test_final.at(p.src_id())) correct = true;
+                // dest = src
+                if (dest_val == test_final.at(p.src_id())) correct = true;
             }
 
             std::cout << p.dest << " prediction ";
@@ -75,11 +84,12 @@ int main(int argc, char** argv) {
             std::cout << " -> " << (correct ? "OK" : "FAIL") << "\n";
 
             if (!correct) {
-                p.update_guess(test_regs, test_final); 
+                p.update_guess(test_regs, test_final);
             }
         }
 
         std::cout << "----------------------\n";
     }
+
 
 }
