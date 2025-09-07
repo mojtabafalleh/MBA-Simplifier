@@ -50,6 +50,15 @@ int main(int argc, char** argv) {
         }
     }
 
+    std::cout << "\n--- Memory accesses ---\n"; 
+    for (auto& m : sim.mem_accesses) { 
+        std::cout << (m.is_write ? "[WRITE] " : "[READ] ") 
+            << "0x" << std::hex << m.addr << 
+            " val=0x" << m.value << (m.reg_src != -1 ? " reg value : " + Simulator::reg_name(m.reg_src) : "") 
+            << "\n"; 
+    }
+
+
     predictions.print_all();
     std::cout << "\n--- Checking predictions over 10 simulations ---\n";
 
@@ -79,9 +88,18 @@ int main(int argc, char** argv) {
                 if (dest_val == test_final.at(p.src_id())) correct = true;
             }
 
-            std::cout << p.dest << " prediction ";
+
             p.print();
             std::cout << " -> " << (correct ? "OK" : "FAIL") << "\n";
+
+            std::cout << "\n--- Memory accesses ---\n";
+            for (auto& m : sim.mem_accesses) {
+                std::cout << (m.is_write ? "[WRITE] " : "[READ] ")
+                    << "0x" << std::hex << m.addr <<
+                    " val=0x" << m.value << (m.reg_src != -1 ? " reg value : " + Simulator::reg_name(m.reg_src) : "")
+                    << "\n";
+            }
+
 
             if (!correct) {
                 p.update_guess(test_regs, test_final);

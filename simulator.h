@@ -6,6 +6,8 @@
 #include <string>
 #include <random>
 #include <iostream>
+#include <random>
+
 
 struct MemAccess {
     uint64_t addr;
@@ -116,15 +118,24 @@ private:
         sim->mem_accesses.push_back({ addr, size, sim->current_ip, val, false, reg_src });
     }
 
+
     static bool hook_mem_invalid(uc_engine* uc, uc_mem_type, uint64_t addr, int, int64_t, void* user) {
         const uint64_t PAGE = 0x1000;
         auto sim = static_cast<Simulator*>(user);
         uint64_t base = addr & ~(PAGE - 1);
         uc_mem_map(uc, base, PAGE, UC_PROT_ALL);
-        std::vector<uint8_t> zeros(PAGE, 0);
-        uc_mem_write(uc, base, zeros.data(), zeros.size());
+
+        std::mt19937 rng(12345);
+        std::uniform_int_distribution<uint32_t> dist(0, 255); 
+
+        std::vector<uint8_t> random_page(PAGE);
+        for (auto& b : random_page) b = static_cast<uint8_t>(dist(rng)); 
+
+        uc_mem_write(uc, base, random_page.data(), random_page.size());
         return true;
     }
+
+
 };
 
 const std::vector<int> Simulator::TRACKED_REGS = {
