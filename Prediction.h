@@ -31,12 +31,13 @@ inline int reg_name_to_id(const std::string& name) {
 
 class Prediction {
 public:
-    std::string dest;         
+    std::string dest;       
     std::string src_reg;      
     Operation op;             
-    std::string value_or_mem; 
+    uint64_t imm;             
+    bool has_imm;             
 
-    Prediction() : op(Operation::NONE) {}
+    Prediction() : op(Operation::NONE), imm(0), has_imm(false) {}
 
     void print() const {
         std::cout << dest << " = ";
@@ -48,23 +49,67 @@ public:
         case Operation::DIV: std::cout << "/"; break;
         default: break;
         }
-        if (!value_or_mem.empty()) std::cout << value_or_mem;
+        if (has_imm) std::cout << "0x" << std::hex << imm;
         std::cout << "\n";
     }
 
     int dest_id() const { return reg_name_to_id(dest); }
     int src_id() const { return src_reg.empty() ? -1 : reg_name_to_id(src_reg); }
+
+    void update_guess(const RegMap& test_regs, const RegMap& test_final) {
+        if (has_imm && test_final.at(dest_id()) != imm) {
+
+            uint64_t min_offset = UINT64_MAX;
+            int closest_reg_id = -1;
+
+            for (auto& i : test_regs) {
+                uint64_t diff = (test_final.at(dest_id()) > i.second)
+                    ? (test_final.at(dest_id()) - i.second)
+                    : (i.second - test_final.at(dest_id()));
+
+                if (diff < min_offset) {
+                    min_offset = diff;
+                    closest_reg_id = i.first;
+                }
+            }
+
+            if (closest_reg_id != -1) {
+                src_reg = Simulator::reg_name(closest_reg_id);
+                has_imm = true;         
+                imm = min_offset;      
+
+                if (test_final.at(dest_id()) > test_regs.at(closest_reg_id))
+                    op = Operation::ADD;
+                else
+                    op = Operation::SUB;
+            }
+        }
+    }
+
+
 };
 
 class PredictionList {
     std::vector<Prediction> preds;
 
 public:
-    void add(const Prediction& p) { preds.push_back(p); }
+    void add(const Prediction& p) {
+
+        for (auto& existing : preds) {
+            if (existing.dest == p.dest) {
+                existing = p; 
+                return;
+            }
+        }
+
+        preds.push_back(p);
+    }
+
+    std::vector<Prediction>& get_all() { return preds; }
+    const std::vector<Prediction>& get_all() const { return preds; }
 
     void print_all() const {
         for (const auto& p : preds) p.print();
     }
-
-    const std::vector<Prediction>& get_all() const { return preds; }
 };
+

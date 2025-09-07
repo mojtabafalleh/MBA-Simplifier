@@ -2,6 +2,10 @@
 #include "simulator.h"
 #include "Prediction.h"
 
+
+
+
+
 int main(int argc, char** argv) {
     if (argc < 2) { std::cerr << "Usage: " << argv[0] << " <hex>\n"; return 1; }
 
@@ -29,16 +33,20 @@ int main(int argc, char** argv) {
             if ((i.second == r.second) && !(i.first == r.first)) {
                 p.src_reg = Simulator::reg_name(i.first);
                 p.op = Operation::NONE;
-                p.value_or_mem = "";
+                p.has_imm = false;
                 predictions.add(p);
+                break;
             }
 
             if ((i.first == r.first) && !(i.second == r.second)) {
                 p.src_reg = "";
                 p.op = Operation::NONE;
-                p.value_or_mem = "0x" + std::to_string(r.second);
+                p.has_imm = true;
+                p.imm = r.second;  
                 predictions.add(p);
+                break;
             }
+
         }
     }
 
@@ -51,24 +59,27 @@ int main(int argc, char** argv) {
         sim.emulate(code, test_regs, test_final);
 
         std::cout << "Run " << k + 1 << ":\n";
-        for (const auto& p : predictions.get_all()) {
+
+        for (auto& p : predictions.get_all()) { 
             bool correct = false;
 
-
-            if (!p.value_or_mem.empty() && p.src_reg.empty()) {
-                uint64_t expected = std::stoull(p.value_or_mem, nullptr, 16);
-                if (test_final[p.dest_id()] == expected) correct = true;
+            if (p.has_imm) {
+                if (test_final.at(p.dest_id()) == p.imm) correct = true;
             }
-
-
-            if (!p.src_reg.empty()) {
-                if (test_final[p.dest_id()] == test_final[p.src_id()]) correct = true;
+            else if (!p.src_reg.empty()) {
+                if (test_final.at(p.dest_id()) == test_final.at(p.src_id())) correct = true;
             }
 
             std::cout << p.dest << " prediction ";
             p.print();
             std::cout << " -> " << (correct ? "OK" : "FAIL") << "\n";
+
+            if (!correct) {
+                p.update_guess(test_regs, test_final); 
+            }
         }
+
         std::cout << "----------------------\n";
     }
+
 }
