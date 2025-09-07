@@ -1,6 +1,7 @@
 ﻿#include <iostream>
+#include <cstring>
 #include "simulator.h"
-#include "Prediction.h"
+#include "deps/XEDParse.h"
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -21,138 +22,56 @@ int main(int argc, char** argv) {
     RegMap init_regs = Simulator::make_random_regs();
     RegMap final_regs;
     sim.emulate(code, init_regs, final_regs);
-    int memory_count = 0;
-    PredictionList predictions;
 
-    for (auto& [reg_id, final_val] : final_regs) {
-        Prediction p;
-        p.dest.type = Operand::Type::REG;
-        p.dest.reg = Simulator::reg_name(reg_id);
+    std::cout << "--- Registers changed ---\n";
 
-        uint64_t init_val = init_regs[reg_id];
+    for (auto& reg : final_regs) {
+        auto it = init_regs.find(reg.first);
+        if (it == init_regs.end() || it->second != reg.second) {
+           
+            std::string target_reg_name = sim.reg_name(reg.first);
+            std::string src_reg_name;
+            for (auto& r : final_regs) {
+                if (r.first != reg.first && r.second == reg.second) {
+                    src_reg_name = sim.reg_name(r.first);
+                    break;
+                }
+            }
 
-        if (init_val != final_val) {
-     
-            p.src.type = Operand::Type::IMM;
-            p.src.imm = final_val;
-            p.op = Operation::NONE;
-            predictions.add(p);
+            if (!src_reg_name.empty()) {
+
+                std::string instr = "mov " + target_reg_name + "," + src_reg_name;
+                XEDPARSE parse;
+                memset(&parse, 0, sizeof(parse));
+                parse.x64 = true;
+                parse.cip = 0x1000;
+                strcpy_s(parse.instr, instr.c_str());
+
+                if (XEDParseAssemble(&parse) == XEDPARSE_ERROR) {
+                    std::cerr << "fail in assembel: " << parse.error << std::endl;
+                    continue;
+                }
+
+                std::cout << instr << " -> Machine code: ";
+                for (int i = 0; i < parse.dest_size; ++i)
+                    printf("%02X ", parse.dest[i]);
+                std::cout << std::endl;
+            }
+
+            std::cout << target_reg_name
+                << " = 0x" << std::hex << reg.second
+                << std::endl;
         }
     }
 
     std::cout << "\n--- Memory accesses ---\n";
-
     for (auto& m : sim.mem_accesses) {
         std::cout << (m.is_write ? "[WRITE] " : "[READ] ")
             << "0x" << std::hex << m.addr
             << " val=0x" << m.value
             << (m.reg_src != -1 ? " reg value : " + Simulator::reg_name(m.reg_src) : "")
             << "\n";
-        Prediction p;
-        memory_count++;
-
-        int closest_reg = -1;
-        uint64_t min_diff = UINT64_MAX;
-        for (auto& [r_id, r_val] : init_regs) {
-            uint64_t diff = (m.addr > r_val) ? (m.addr - r_val) : (r_val - m.addr);
-            if (diff < min_diff) {
-                min_diff = diff;
-                closest_reg = r_id;
-            }
-        }
-        for (auto& [reg_id, final_val] : final_regs) {
-            if (final_val == m.value) {
-                Prediction reg_pred;
-                reg_pred.dest.type = Operand::Type::REG;
-                reg_pred.dest.reg = Simulator::reg_name(reg_id);
-                reg_pred.src.type = Operand::Type::MEM;
-                reg_pred.src.id = memory_count;
-                reg_pred.op = Operation::NONE;
-                predictions.add(reg_pred);
-            }
-        }
-        if (closest_reg != -1) {
-            p.dest.type = Operand::Type::MEM;
-            p.dest.id = memory_count;
-            p.src.type = Operand::Type::REG;
-            p.src.reg = Simulator::reg_name(closest_reg);
-            p.op = (m.addr > init_regs.at(closest_reg)) ? Operation::ADD : Operation::SUB;
-            p.src.imm = min_diff;
-            predictions.add(p);
-        }
-
-
-
     }
 
-    predictions.print_all();
-
-    std::cout << "\n--- Checking predictions over 10 simulations ---\n";
-
-    for (int k = 0; k < 10; ++k) {
-        RegMap test_regs = Simulator::make_random_regs();
-        RegMap test_final;
-        sim.emulate(code, test_regs, test_final);
-
-        std::cout << "Run " << k + 1 << ":\n";
-
-        for (auto& p : predictions.get_all()) {
-            bool correct = false;
-
- 
-
-            if (p.src.type ==Operand::Type::REG && p.dest.type != Operand::Type::MEM) {
-                uint64_t dest_val = dest_val = test_final.at(p.dest_id());;
-                uint64_t src_val = test_regs.at(reg_name_to_id(p.src.reg));
-                switch (p.op) {
-                case Operation::ADD: if (dest_val == src_val + p.src.imm) correct = true; break;
-                case Operation::SUB: if (dest_val == src_val - p.src.imm) correct = true; break;
-                case Operation::MUL: if (dest_val == src_val * p.src.imm) correct = true; break;
-                case Operation::DIV: if (src_val != 0 && dest_val == src_val / p.src.imm) correct = true; break;
-                case Operation::XOR: if (dest_val == src_val ^ p.src.imm) correct = true; break;
-                case Operation::SHL: if (dest_val == src_val << p.src.imm) correct = true; break;
-                case Operation::SHR: if (dest_val == src_val >> p.src.imm) correct = true; break;
-                default: break;
-                }
-            }
-            else if (p.src.type == Operand::Type::IMM) {
-                uint64_t dest_val = dest_val = test_final.at(p.dest_id());;
-                if (dest_val == p.src.imm) correct = true;
-            }
-            else if (p.dest.type == Operand::Type::MEM && p.src.type == Operand::Type::REG) {
-                int id = 0;
-
-                for (auto& m : sim.mem_accesses) {
-                    id++;
-                    if (p.dest.id == id) {
-                        uint64_t src_val = test_regs.at(reg_name_to_id(p.src.reg));
-                        uint64_t dest_val = m.addr;
-                        switch (p.op) {
-                        case Operation::ADD: if (dest_val == src_val + p.src.imm) correct = true; break;
-                        case Operation::SUB: if (dest_val == src_val - p.src.imm) correct = true; break;
-                        case Operation::MUL: if (dest_val == src_val * p.src.imm) correct = true; break;
-                        case Operation::DIV: if (src_val != 0 && dest_val == src_val / p.src.imm) correct = true; break;
-                        case Operation::XOR: if (dest_val == src_val ^ p.src.imm) correct = true; break;
-                        case Operation::SHL: if (dest_val == src_val << p.src.imm) correct = true; break;
-                        case Operation::SHR: if (dest_val == src_val >> p.src.imm) correct = true; break;
-                        default: break;
-                        }
-                    }
-                }
-            }
-   
-            p.print();
-            std::cout << " -> " << (correct ? "OK" : "FAIL") << "\n";
-
-
-    
- 
-
-            if (!correct) {
-                p.update_guess(test_regs, test_final);
-            }
-        }
-
-        std::cout << "----------------------\n";
-    }
+    return 0;
 }
