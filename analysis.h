@@ -38,27 +38,42 @@ void assemble_instruction(const std::string& instr, std::vector<uint8_t>& machin
 // ---------------- RSP Handling ----------------
 bool handle_rsp_change(Simulator& sim, uint64_t& virtual_rsp,
     uint64_t old_rsp, uint64_t new_rsp,
+    const RegMap& init_regs,
     std::string& instr, std::vector<uint8_t>& machine_code)
 {
-    int64_t diff = static_cast<int64_t>(new_rsp) - static_cast<int64_t>(old_rsp);
+    if (old_rsp == new_rsp) return false;
+
     std::string guessed_instr;
 
-    if (diff > 0 && diff < 0x1000)
-        guessed_instr = "add rsp, 0x" + to_hex(diff);
-    else if (diff < 0 && -diff < 0x1000)
-        guessed_instr = "sub rsp, 0x" + to_hex(-diff);
-    else if (diff >= -0x8000 && diff <= 0x7FFF)
-        guessed_instr = "lea rsp, [rsp" + to_hex_signed(diff) + "]";
 
-    if (!guessed_instr.empty()) {
-        assemble_instruction(guessed_instr, machine_code);
-        instr = guessed_instr;
-        virtual_rsp = new_rsp;
-        return true;
+    for (auto& r : init_regs) {
+        if (r.first != UC_X86_REG_RSP && r.second == new_rsp) {
+            guessed_instr = "mov rsp," + sim.reg_name(r.first);
+            break;
+        }
     }
 
-    return false;
+
+    if (guessed_instr.empty()) {
+        int64_t diff = static_cast<int64_t>(new_rsp) - static_cast<int64_t>(old_rsp);
+        if (diff > 0 && diff < 0x1000)
+            guessed_instr = "add rsp, 0x" + to_hex(diff);
+        else if (diff < 0 && -diff < 0x1000)
+            guessed_instr = "sub rsp, 0x" + to_hex(-diff);
+        else if (diff >= -0x8000 && diff <= 0x7FFF)
+            guessed_instr = "lea rsp, [rsp" + to_hex_signed(diff) + "]";
+        else
+            guessed_instr = "mov rsp,0x" + to_hex(new_rsp);
+    }
+
+    assemble_instruction(guessed_instr, machine_code);
+    instr = guessed_instr;
+    virtual_rsp = new_rsp;
+
+    return true;
 }
+
+
 
 // ---------------- Single Register Guess ----------------
 std::string guess_register_instruction(Simulator& sim,
@@ -71,6 +86,13 @@ std::string guess_register_instruction(Simulator& sim,
     // XOR reg, reg
     if (new_val == 0) return "xor " + reg_name + "," + reg_name;
 
+
+    for (auto& r : init_regs) {
+        if (r.second == new_val && sim.reg_name(r.first) != reg_name) {
+            return "mov " + reg_name + "," + sim.reg_name(r.first);
+        }
+    }
+
     // INC/DEC/ADD/SUB
     int64_t diff = static_cast<int64_t>(new_val) - static_cast<int64_t>(old_val);
     if (diff == 1) return "inc " + reg_name;
@@ -78,9 +100,10 @@ std::string guess_register_instruction(Simulator& sim,
     if (diff > 0 && diff < 0x1000) return "add " + reg_name + ",0x" + to_hex(diff);
     if (diff < 0 && -diff < 0x1000) return "sub " + reg_name + ",0x" + to_hex(-diff);
 
-    // Fallback MOV
+    // Fallback MOV immediate
     return "mov " + reg_name + ",0x" + to_hex(new_val);
 }
+
 
 // ---------------- Analyzer ----------------
 struct GuessResult {
@@ -99,7 +122,7 @@ GuessResult guess_instruction(Simulator& sim,
     auto rsp_final_it = final_regs.find(UC_X86_REG_RSP);
     if (rsp_final_it != final_regs.end() && rsp_final_it->second != virtual_rsp) {
         handle_rsp_change(sim, virtual_rsp, virtual_rsp, rsp_final_it->second,
-            result.instr, result.machine_code);
+            final_regs,result.instr, result.machine_code);
     }
 
     // Check other registers
