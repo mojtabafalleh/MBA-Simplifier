@@ -56,7 +56,7 @@ int main(int argc, char** argv) {
     auto final_guess = guess_instruction(sim, init_regs, final_regs);
 
     if (!final_guess.machine_code.empty()) {
-        auto result = InstructionTester::test_equivalence(code, final_guess.machine_code, TestMode::FIXED_REGS);
+        auto result = InstructionTester::test_equivalence(code, final_guess.machine_code, TestMode::RANDOM_REGS);
 
         if (result.match) {
             std::cout << "\033[1;32m[OK] " << final_guess.instr << " behaves same as original.\033[0m\n";
