@@ -62,7 +62,7 @@ int main(int argc, char** argv) {
             std::cout << "\033[1;32m[OK] " << final_guess.instr << " behaves same as original.\033[0m\n";
         }
         else {
-            std::cout << "\033[1;31m[FAIL] " << final_guess.instr << " Predicted instr mismatch!\033[0m\n";
+            std::cout << "\033[1;31m[FAIL] Predicted instr mismatch!\033[0m\n";
         }
     }
 
