@@ -20,23 +20,49 @@ int main(int argc, char** argv) {
     }
 
     Simulator sim;
+
+    const int NUM_TRIALS = 10;
+    std::map<std::string, int> instr_votes; 
+
+    for (int trial = 0; trial < NUM_TRIALS; trial++) {
+        RegMap init_regs = Simulator::make_random_regs();
+        RegMap final_regs;
+        sim.emulate(code, init_regs, final_regs);
+
+        auto guess = guess_instruction(sim, init_regs, final_regs);
+
+        if (!guess.instr.empty()) {
+            instr_votes[guess.instr]++;
+        }
+    }
+
+
+    std::string best_instr;
+    int max_votes = 0;
+    for (auto& kv : instr_votes) {
+        if (kv.second > max_votes) {
+            max_votes = kv.second;
+            best_instr = kv.first;
+        }
+    }
+
+    std::cout << "[Best guess after " << NUM_TRIALS << " trials]: " << best_instr << "\n";
+
+
     RegMap init_regs = Simulator::make_random_regs();
     RegMap final_regs;
     sim.emulate(code, init_regs, final_regs);
 
+    auto final_guess = guess_instruction(sim, init_regs, final_regs);
 
-
-    auto guess = guess_instruction(sim, init_regs, final_regs);
-
-
-    if (!guess.machine_code.empty()) {
-        auto result = InstructionTester::test_equivalence(code, guess.machine_code, TestMode::RANDOM_REGS);
+    if (!final_guess.machine_code.empty()) {
+        auto result = InstructionTester::test_equivalence(code, final_guess.machine_code, TestMode::FIXED_REGS);
 
         if (result.match) {
-            std::cout << "[OK] " << guess.instr << " behaves same as original.\n";
+            std::cout << "\033[1;32m[OK] " << final_guess.instr << " behaves same as original.\033[0m\n";
         }
         else {
-            std::cout << "[FAIL] Predicted instr mismatch!\n";
+            std::cout << "\033[1;31m[FAIL] " << final_guess.instr << " Predicted instr mismatch!\033[0m\n";
         }
     }
 
