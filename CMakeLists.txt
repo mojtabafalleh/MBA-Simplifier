@@ -12,3 +12,9 @@ include_directories(deps/)
 # Unicorn
 add_subdirectory(deps/unicorn)
 target_link_libraries(MBA-Simplifier unicorn "${CMAKE_SOURCE_DIR}/libs/XEDParse_x64.lib") 
+
+add_custom_command(TARGET MBA-Simplifier POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_SOURCE_DIR}/deps/XEDParse.dll"
+        $<TARGET_FILE_DIR:MBA-Simplifier>
+)
