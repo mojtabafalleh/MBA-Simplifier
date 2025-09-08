@@ -3,6 +3,7 @@
 
 #include <iostream>
 #include <cstring>
+#include <set>
 // ---------------- Utils ----------------
 std::string to_hex(uint64_t val) {
     std::ostringstream oss;
@@ -24,18 +25,15 @@ struct GuessResult {
 };
 
 
-static std::map<int, std::vector<int64_t>> reg_change_history;
 GuessResult guess_instruction(Simulator& sim,
     const RegMap& init_regs,
     const RegMap& final_regs)
 {
     GuessResult result;
-
-    // ???? ????? RSP
     uint64_t virtual_rsp = init_regs.at(UC_X86_REG_RSP);
 
     for (auto& reg : final_regs) {
-        if (reg.first == UC_X86_REG_RSP) continue;
+        if (reg.first == UC_X86_REG_RSP) continue;  // RSP handled virtually
         auto it = init_regs.find(reg.first);
         if (it == init_regs.end() || it->second != reg.second) {
 
@@ -46,11 +44,10 @@ GuessResult guess_instruction(Simulator& sim,
             uint64_t old_val = it != init_regs.end() ? it->second : 0;
             uint64_t new_val = reg.second;
 
-            // ---------- PUSH/POP using memory accesses ----------
+            // ---------------- PUSH/POP using memory ----------------
             for (auto& m : sim.mem_accesses) {
                 if (instr_found) break;
 
-                // POP pattern: READ from [virtual RSP] ? reg
                 if (!m.is_write && m.value == new_val && m.addr == virtual_rsp) {
                     guessed_instr = "pop " + target_reg_name;
                     instr_found = true;
@@ -58,7 +55,6 @@ GuessResult guess_instruction(Simulator& sim,
                     break;
                 }
 
-                // PUSH pattern: WRITE reg ? [virtual RSP - 8]
                 if (m.is_write && m.value == old_val && m.addr == virtual_rsp - 8) {
                     guessed_instr = "push " + target_reg_name;
                     instr_found = true;
@@ -66,7 +62,6 @@ GuessResult guess_instruction(Simulator& sim,
                     break;
                 }
 
-                // MOV from memory
                 if (!instr_found && !m.is_write && m.value == new_val) {
                     guessed_instr = "mov " + target_reg_name + ", [0x" + to_hex(m.addr) + "]";
                     instr_found = true;
@@ -74,39 +69,33 @@ GuessResult guess_instruction(Simulator& sim,
                 }
             }
 
-            // ---------- MOV from another reg ----------
+
+            // ---------------- XOR / AND pattern ----------------
             if (!instr_found) {
                 for (auto& r : final_regs) {
-                    if (r.first != reg.first && r.second == reg.second) {
-                        guessed_instr = "mov " + target_reg_name + "," + sim.reg_name(r.first);
+         
+                    uint64_t other_val = init_regs.at(r.first);
+                    if ((old_val ^ other_val) == new_val) {
+                        guessed_instr = "xor " + target_reg_name + "," + sim.reg_name(r.first);
+                        instr_found = true;
+                        break;
+                    }
+                    if ((old_val & other_val) == new_val) {
+                        guessed_instr = "and " + target_reg_name + "," + sim.reg_name(r.first);
                         instr_found = true;
                         break;
                     }
                 }
             }
 
-            // ---------- XOR pattern ----------
-            if (!instr_found) {
-                for (auto& r : init_regs) {
-                    if (r.first == reg.first) continue;
-                    if (final_regs.at(r.first) == r.second) { // unchanged reg
-                        if ((old_val ^ r.second) == new_val) {
-                            guessed_instr = "xor " + target_reg_name + "," + sim.reg_name(r.first);
-                            instr_found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            // ---------- ADD/SUB pattern ----------
+            // ---------------- ADD / SUB ----------------
             if (!instr_found) {
                 int64_t diff = static_cast<int64_t>(new_val) - static_cast<int64_t>(old_val);
                 if (diff > 0 && diff < 0x1000) { guessed_instr = "add " + target_reg_name + ",0x" + to_hex(diff); instr_found = true; }
                 if (!instr_found && diff < 0 && -diff < 0x1000) { guessed_instr = "sub " + target_reg_name + ",0x" + to_hex(-diff); instr_found = true; }
             }
 
-            // ---------- SHIFT patterns (shl/shr) ----------
+            // ---------------- SHIFT (SHL / SHR) ----------------
             if (!instr_found && old_val != 0) {
                 uint64_t quotient = 0;
                 if (new_val > old_val && new_val % old_val == 0) quotient = new_val / old_val;
@@ -118,11 +107,21 @@ GuessResult guess_instruction(Simulator& sim,
                     instr_found = true;
                 }
             }
+            // ---------------- MOV from another reg ----------------
+            if (!instr_found) {
+                for (auto& r : final_regs) {
+                    if (r.first != reg.first && r.second == reg.second) {
+                        guessed_instr = "mov " + target_reg_name + "," + sim.reg_name(r.first);
+                        instr_found = true;
+                        break;
+                    }
+                }
+            }
 
-            // ---------- Fallback ----------
+            // ---------------- Fallback MOV ----------------
             if (!instr_found) guessed_instr = "mov " + target_reg_name + ",0x" + to_hex(new_val);
 
-            // ---------- Assemble ----------
+            // ---------------- Assemble ----------------
             XEDPARSE parse;
             memset(&parse, 0, sizeof(parse));
             parse.x64 = true;
@@ -130,7 +129,7 @@ GuessResult guess_instruction(Simulator& sim,
             strcpy_s(parse.instr, guessed_instr.c_str());
 
             if (XEDParseAssemble(&parse) == XEDPARSE_ERROR) {
-                std::cerr << "fail in assemble: " << parse.error << ", fallback..." << std::endl;
+                std::cerr << "fail in assemble: " << parse.error << ", fallback...\n";
                 guessed_instr = "mov " + target_reg_name + ",0x" + to_hex(new_val);
                 memset(&parse, 0, sizeof(parse));
                 parse.x64 = true;
@@ -139,7 +138,7 @@ GuessResult guess_instruction(Simulator& sim,
                 XEDParseAssemble(&parse);
             }
 
-            // ---------- Combine multiple instructions ----------
+            // ---------------- Combine multiple instructions ----------------
             if (!result.instr.empty()) result.instr += "; ";
             result.instr += guessed_instr;
 
@@ -149,6 +148,9 @@ GuessResult guess_instruction(Simulator& sim,
 
     return result;
 }
+
+
+
 
 
 
