@@ -61,6 +61,11 @@ public:
         for (int r : TRACKED_REGS) regs[r] = dist(rng);
         return regs;
     }
+    static uint64_t make_random_addr() {
+        std::mt19937_64 rng(std::random_device{}());
+        std::uniform_int_distribution<uint64_t> dist(0x10000000ULL, 0x7FFFFFFFULL);
+        return (dist(rng) & ~0xFFFULL); 
+    }
 
     static void write_regs(uc_engine* uc, const RegMap& regs) {
         for (auto& p : regs) { uint64_t v = p.second; uc_reg_write(uc, p.first, &v); }
@@ -76,14 +81,18 @@ public:
         uc_engine* uc;
         if (uc_open(UC_ARCH_X86, UC_MODE_64, &uc) != UC_ERR_OK) return false;
 
-        const uint64_t ADDR = 0x1000000ULL;
+        uint64_t ADDR = make_random_addr();
         uc_mem_map(uc, ADDR, 2 * 1024 * 1024, UC_PROT_ALL);
         uc_mem_write(uc, ADDR, code.data(), code.size());
 
         last_regs_in = init_regs;
         write_regs(uc, init_regs);
+
+
+        uc_reg_write(uc, UC_X86_REG_RIP, &ADDR);
+
         mem_accesses.clear();
-        current_ip = 0;
+        current_ip = ADDR;
 
         uc_hook h_r, h_w, h_inv;
         uc_hook_add(uc, &h_r, UC_HOOK_MEM_READ, (void*)hook_mem_read, this, 1, 0);
@@ -92,10 +101,15 @@ public:
 
         uc_emu_start(uc, ADDR, ADDR + code.size(), 0, 0);
 
+        uint64_t rip_val = 0;
+        uc_reg_read(uc, UC_X86_REG_RIP, &rip_val);
+        current_ip = rip_val;
+
         final_regs = read_regs(uc);
         uc_close(uc);
         return true;
     }
+
 
 private:
     static void hook_mem_write(uc_engine*, uc_mem_type, uint64_t addr, int size, int64_t value, void* user) {

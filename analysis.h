@@ -6,6 +6,19 @@
 #include <sstream>
 #include <cmath>
 #include <memory>
+constexpr int REG_RIP_FAKE = -2;
+
+struct MemorySymbol {
+    uint64_t addr;
+    int base_reg;
+    int64_t disp;
+    std::string repr;
+    uint64_t value;
+};
+struct GuessResult {
+    std::string instr;
+    std::vector<uint8_t> machine_code;
+};
 
 std::string to_hex(uint64_t val) {
     std::ostringstream oss;
@@ -59,13 +72,6 @@ bool handle_rsp_change(Simulator& sim, uint64_t& virtual_rsp,
     return true;
 }
 
-struct MemorySymbol {
-    uint64_t addr;
-    int base_reg;
-    int64_t disp;
-    std::string repr;
-    uint64_t value;
-};
 
 std::vector<MemorySymbol> build_memory_symbols(Simulator& sim,
     const std::vector<MemAccess>& mem_accesses,
@@ -113,6 +119,22 @@ std::vector<MemorySymbol> build_memory_symbols(Simulator& sim,
             ms2.value = m.value;
             syms.push_back(ms2);
         }
+        int64_t disp = static_cast<int64_t>(m.addr) - static_cast<int64_t>(sim.current_ip);
+        if (disp >= INT32_MIN && disp <= INT32_MAX) {
+            MemorySymbol ms_rip;
+            ms_rip.addr = m.addr;
+            ms_rip.base_reg = REG_RIP_FAKE;
+            ms_rip.disp = disp;
+            std::ostringstream oss;
+            oss << "[rip";
+            if (disp > 0) oss << "+0x" << std::hex << disp;
+            else if (disp < 0) oss << "-0x" << std::hex << -disp;
+            oss << "]";
+            ms_rip.repr = oss.str();
+            ms_rip.value = m.value;
+            syms.push_back(ms_rip);
+            continue;
+        }
     }
     std::vector<MemorySymbol> dedup;
     for (auto& s : syms) {
@@ -144,7 +166,9 @@ std::string guess_memory_write(Simulator& sim,
             }
         }
         for (auto& ms : mem_syms) {
-            if (ms.addr == m.addr) return "mov qword ptr " + ms.repr + "," + src;
+            if (ms.addr == m.addr) {
+                return "mov qword ptr " + ms.repr + "," + src;
+            }
         }
         auto try_base_disp = [&](const RegMap& regs) -> std::string {
             for (auto& r : regs) {
@@ -247,10 +271,6 @@ std::string guess_register_instruction(Simulator& sim,
     return "mov " + reg_name + ",0x" + to_hex(new_val);
 }
 
-struct GuessResult {
-    std::string instr;
-    std::vector<uint8_t> machine_code;
-};
 
 GuessResult guess_instruction(Simulator& sim,
     const RegMap& init_regs,
