@@ -4,7 +4,7 @@ project(MBA-Simplifier)
 set(CMAKE_CXX_STANDARD 20)
 
 # سورس پروژه
-add_executable(MBA-Simplifier "MBA-Simplifier.cpp" "simulator.h"  "analysis.h")
+add_executable(MBA-Simplifier "MBA-Simplifier.cpp" "simulator.h"  "analysis.h"  "InstructionSynthesizer.h")
 
 # include dirs
 include_directories(deps/)

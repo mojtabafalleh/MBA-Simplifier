@@ -8,6 +8,7 @@
 #include <iostream>
 #include <sstream>
 
+
 struct MemAccess {
     uint64_t addr;
     int size;
@@ -41,6 +42,7 @@ public:
     }
 
     static std::string reg_name(int r) {
+         
         switch (r) {
         case UC_X86_REG_RAX: return "RAX"; case UC_X86_REG_RBX: return "RBX";
         case UC_X86_REG_RCX: return "RCX"; case UC_X86_REG_RDX: return "RDX";
@@ -50,7 +52,7 @@ public:
         case UC_X86_REG_R10: return "R10"; case UC_X86_REG_R11: return "R11";
         case UC_X86_REG_R12: return "R12"; case UC_X86_REG_R13: return "R13";
         case UC_X86_REG_R14: return "R14"; case UC_X86_REG_R15: return "R15";
-        default: return "UNK";
+        default: return "UNK" ;
         }
     }
 

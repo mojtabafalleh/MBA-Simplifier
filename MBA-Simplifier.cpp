@@ -1,8 +1,16 @@
 ﻿#include <iostream>
+#include <windows.h> 
 #include <cstring>
 #include "simulator.h"
-#include "deps/XEDParse.h"
 #include "analysis.h"
+#include "InstructionSynthesizer.h"
+
+void print_colored(const std::string& text, WORD color) {
+    HANDLE hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    SetConsoleTextAttribute(hConsole, color);
+    std::cout << text << std::endl;
+    SetConsoleTextAttribute(hConsole, 7); 
+}
 
 int main(int argc, char** argv) {
     if (argc < 2) {
@@ -13,73 +21,53 @@ int main(int argc, char** argv) {
     std::string hex;
     for (int i = 1; i < argc; i++) hex += argv[i];
 
-    auto code = Simulator::hex_to_bytes(hex);
-    if (code.empty()) {
+    auto original_code = Simulator::hex_to_bytes(hex);
+    if (original_code.empty()) {
         std::cerr << "No code\n";
         return 1;
     }
 
     Simulator sim;
-
-    const int NUM_TRIALS = 10;
-    std::map<std::string, int> instr_votes; 
-
-    for (int trial = 0; trial < NUM_TRIALS; trial++) {
-        RegMap init_regs = Simulator::make_random_regs();
-        RegMap final_regs;
-        sim.emulate(code, init_regs, final_regs);
-
-        auto guess = guess_instruction(sim, init_regs, final_regs);
-
-        if (!guess.instr.empty()) {
-            instr_votes[guess.instr]++;
-        }
-    }
-
-
-    std::string best_instr;
-    int max_votes = 0;
-    for (auto& kv : instr_votes) {
-        if (kv.second > max_votes) {
-            max_votes = kv.second;
-            best_instr = kv.first;
-        }
-    }
-
-    std::cout << "[Best guess after " << NUM_TRIALS << " trials]: " << best_instr << "\n";
-
-
     RegMap init_regs = Simulator::make_random_regs();
-    RegMap final_regs;
-    sim.emulate(code, init_regs, final_regs);
+    RegMap final_regs_original;
+    sim.emulate(original_code, init_regs, final_regs_original);
 
-    auto final_guess = guess_instruction(sim, init_regs, final_regs);
+    ExecutionResult result = analyze_execution(sim, init_regs, final_regs_original);
 
-    if (!final_guess.machine_code.empty()) {
-        auto result = InstructionTester::test_equivalence(code, final_guess.machine_code, TestMode::RANDOM_REGS);
+    InstructionSynthesizer synth;
+    auto out = synth.synthesize(result, init_regs, final_regs_original);
 
-        if (result.match) {
-            std::cout << "\033[1;32m[OK] " << final_guess.instr << " behaves same as original.\033[0m\n";
+    std::cout << "Assembly: " << out.asm_code << "\n";
+    std::cout << "Machine code: ";
+    for (auto b : out.machine_code) {
+        printf("%02X ", b);
+    }
+    std::cout << std::endl;
 
-            std::cout << "Machine code: ";
-            for (auto b : final_guess.machine_code) {
-                printf("%02X ", b);
-            }
-            std::cout << std::endl;
-        }
-        else {
-            std::cout << "\033[1;31m[FAIL] Predicted instr mismatch!\033[0m\n";
+    print_register_changes(result);
+    print_memory_accesses(result);
 
-            std::cout << "Predicted machine code: ";
-            for (auto b : final_guess.machine_code) {
-                printf("%02X ", b);
-            }
-            std::cout << std::endl;
+    RegMap final_regs_synth;
+    init_regs = Simulator::make_random_regs();
+    sim.emulate(original_code, init_regs, final_regs_original);
+    sim.emulate(out.machine_code, init_regs, final_regs_synth);
+
+    bool success = true;
+    for (auto& reg : final_regs_original) {
+        if (final_regs_synth[reg.first] != reg.second) {
+            success = false;
+            std::cout << "Mismatch in register " << sim.reg_name(reg.first)
+                << ": original=" << reg.second
+                << ", synthesized=" << final_regs_synth[reg.first] << "\n";
         }
     }
 
-
-    print_memory_accesses(sim);
+    if (success) {
+        print_colored("succsess.", FOREGROUND_GREEN | FOREGROUND_INTENSITY);
+    }
+    else {
+        print_colored("fail.", FOREGROUND_RED | FOREGROUND_INTENSITY);
+    }
 
     return 0;
 }
