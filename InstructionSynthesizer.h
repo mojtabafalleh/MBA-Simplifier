@@ -32,7 +32,7 @@ public:
                     for (auto& ma : result.mem_accesses) {
 
                         if ((kv.second == ma.addr) && (rc.new_val == ma.value) && !ma.is_write) {
-                            instructions.push_back("mov " + rc.name + ", [" + Simulator::reg_name(kv.first) + "]");
+                            instructions.push_back("mov " + dst + ", [" + src + "]");
                             handled = true;
                             break;
                         }
