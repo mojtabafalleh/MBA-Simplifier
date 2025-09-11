@@ -22,24 +22,8 @@ public:
         std::vector<std::string> instructions;
 
 
-        bool any_change = false;
+
         for (auto& rc : result.reg_changes) {
-            if (rc.old_val != rc.new_val) {
-                any_change = true;
-                break;
-            }
-        }
-        for (auto& ma : result.mem_accesses) {
-            if (ma.is_write) {
-                any_change = true;
-                break;
-            }
-        }
-        if (!any_change) {
-            instructions.push_back("nop");
-        }
-        else {
-            for (auto& rc : result.reg_changes) {
                 std::string dst = rc.name;
                 bool handled = false;
                 for (auto& kv : init_regs) {
@@ -47,8 +31,6 @@ public:
                        
                     for (auto& ma : result.mem_accesses) {
 
-                        
-               
                         if ((kv.second == ma.addr) && (rc.new_val == ma.value) && !ma.is_write) {
                             instructions.push_back("mov " + rc.name + ", [" + Simulator::reg_name(kv.first) + "]");
                             handled = true;
@@ -125,18 +107,23 @@ public:
                     instructions.push_back("mov " + dst + ", 0x" + to_hex(rc.new_val));
                 }
             }
-            for (auto& kv : init_regs) {
+        for (auto& kv : init_regs) {
 
                 for (auto& ma : result.mem_accesses) {
-
+                    std::cout << (kv.second == ma.addr) && ma.is_write;
                     if ((kv.second == ma.addr) && ma.is_write) {
                         instructions.push_back("mov [" + Simulator::reg_name(kv.first) + "], " + Simulator::reg_name(ma.reg_src));
                     }
 
                 }
 
-            }
         }
+
+
+
+        
+         if (instructions.empty())
+              instructions.push_back("nop");
 
         out.asm_code = "";
         for (auto& instr : instructions) {
