@@ -103,14 +103,10 @@ public:
                     }
                 }
 
-                if (!handled) {
-                    instructions.push_back("mov " + dst + ", 0x" + to_hex(rc.new_val));
-                }
             }
         for (auto& kv : init_regs) {
 
                 for (auto& ma : result.mem_accesses) {
-                    std::cout << (kv.second == ma.addr) && ma.is_write;
                     if ((kv.second == ma.addr) && ma.is_write) {
                         instructions.push_back("mov [" + Simulator::reg_name(kv.first) + "], " + Simulator::reg_name(ma.reg_src));
                     }
