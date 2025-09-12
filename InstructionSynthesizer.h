@@ -105,17 +105,38 @@ public:
                 if (!handled) {
                     
                     for (auto& rel : result.relations) {
-                        if (rel.reg == dst) {
-                            if (rel.delta > 0) {
-                                instructions.push_back("add " + dst + ", " + imm_hex((int)rel.delta));
+                        if (rel.lhs == dst && rel.valid) {
+                            if (rel.rhs.find("mem") != std::string::npos) {
+                        
+                                if (rel.delta != 0) {
+                                    instructions.push_back("mov " + dst + ", [" + rel.rhs.substr(4, rel.rhs.size() - 5) + " + " + imm_hex((int)rel.delta) + "]");
+                                }
+                                else {
+                                    instructions.push_back("mov " + dst + ", [" + rel.rhs.substr(4, rel.rhs.size() - 5) + "]");
+                                }
+                            }
+                            else if (rel.rhs == "0x0") {
+                          
+                                if (rel.delta > 0)
+                                    instructions.push_back("add " + dst + ", " + imm_hex((int)rel.delta));
+                                else if (rel.delta < 0)
+                                    instructions.push_back("sub " + dst + ", " + imm_hex((int)(-rel.delta)));
+                 
                             }
                             else {
-                                instructions.push_back("sub " + dst + ", " + imm_hex((int)(-rel.delta)));
+              
+                                instructions.push_back("mov " + dst + ", " + rel.rhs);
+                                if (rel.delta > 0)
+                                    instructions.push_back("add " + dst + ", " + imm_hex((int)rel.delta));
+                                else if (rel.delta < 0)
+                                    instructions.push_back("sub " + dst + ", " + imm_hex((int)(-rel.delta)));
                             }
                             handled = true;
                             break;
                         }
                     }
+
+
                 }
 
             }
