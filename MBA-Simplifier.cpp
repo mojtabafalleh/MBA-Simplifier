@@ -32,7 +32,7 @@ int main(int argc, char** argv) {
     RegMap final_regs_original;
     sim.emulate(original_code, init_regs, final_regs_original);
 
-    ExecutionResult result = analyze_execution(sim, init_regs, final_regs_original);
+    ExecutionResult result = analyze_execution(sim, original_code, init_regs, final_regs_original);
 
     InstructionSynthesizer synth;
     auto out = synth.synthesize(result, init_regs, final_regs_original);

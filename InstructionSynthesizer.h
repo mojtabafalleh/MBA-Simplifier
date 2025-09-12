@@ -102,6 +102,21 @@ public:
                         }
                     }
                 }
+                if (!handled) {
+                    
+                    for (auto& rel : result.relations) {
+                        if (rel.reg == dst) {
+                            if (rel.delta > 0) {
+                                instructions.push_back("add " + dst + ", " + imm_hex((int)rel.delta));
+                            }
+                            else {
+                                instructions.push_back("sub " + dst + ", " + imm_hex((int)(-rel.delta)));
+                            }
+                            handled = true;
+                            break;
+                        }
+                    }
+                }
 
             }
         for (auto& kv : init_regs) {

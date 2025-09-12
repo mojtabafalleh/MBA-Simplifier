@@ -17,12 +17,56 @@ struct MemAccessModel {
     int reg_src;   
 };
 
+struct Relation {
+    std::string reg;
+    int64_t delta;
+    bool valid;
+};
+
 struct ExecutionResult {
     std::vector<RegChange> reg_changes;
     std::vector<MemAccessModel> mem_accesses;
+    std::vector<Relation> relations;   
 };
 
+inline std::vector<Relation> find_constant_relations(
+    Simulator& sim,
+    const std::vector<uint8_t>& code,
+    int trials = 5
+) {
+    std::vector<Relation> out;
+
+    for (int r : Simulator::TRACKED_REGS) {
+        bool first = true;
+        int64_t expected_delta = 0;
+        bool stable = true;
+
+        for (int t = 0; t < trials; t++) {
+            auto init = Simulator::make_random_regs();
+            RegMap final;
+            sim.emulate(code, init, final);
+
+            int64_t diff = (int64_t)final[r] - (int64_t)init[r];
+            if (first) {
+                expected_delta = diff;
+                first = false;
+            }
+            else if (expected_delta != diff) {
+                stable = false;
+                break;
+            }
+        }
+
+        if (!first && stable && expected_delta != 0) {
+            out.push_back({ Simulator::reg_name(r), expected_delta, true });
+        }
+    }
+
+    return out;
+}
+
 ExecutionResult analyze_execution(Simulator& sim,
+    const std::vector<uint8_t>& code,
     const RegMap& init_regs,
     const RegMap& final_regs)
 {
@@ -50,6 +94,8 @@ ExecutionResult analyze_execution(Simulator& sim,
             m.reg_src
             });
     }
+
+    result.relations = find_constant_relations(sim, code, 5);
 
     return result;
 }
