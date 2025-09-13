@@ -48,12 +48,11 @@ std::string get_mem_name(uint64_t addr, const RegMap& regs, const std::vector<Me
                 return "mem[" + reg_name + "]";
             }
             std::string sign = (offset > 0) ? " + 0x" : " - 0x";
-            return "mem[" + reg_name + sign + to_hex(std::abs(offset)) + "]";
+            return "mem[" + reg_name + sign + to_hex(std::abs(offset)) + "]"; 
         }
     }
     return "mem[0x" + to_hex(addr) + "]";
 }
-
 inline std::vector<Relation> find_constant_relations(
     Simulator& sim,
     const std::vector<uint8_t>& code,
@@ -101,8 +100,10 @@ inline std::vector<Relation> find_constant_relations(
             }
         }
         if (stable && delta != 0) {
-            std::string rhs = "init_" + Simulator::reg_name(reg_id);
-            relations.push_back({ Simulator::reg_name(reg_id), rhs, delta, true });
+
+            std::string reg_name = Simulator::reg_name(reg_id);
+            std::string rhs = reg_name;
+            relations.push_back({ reg_name, rhs, delta, true });
         }
     }
     for (int r1 : Simulator::TRACKED_REGS) {
@@ -153,10 +154,10 @@ inline std::vector<Relation> find_constant_relations(
                 }
             }
             if (stable) {
-                std::string mem_name = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
+                std::string mem_name = get_mem_name(m0.addr, inits[0], mem_accesses[0], idx);
                 bool consistent_base = true;
                 for (int t = 1; t < trials; ++t) {
-                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != mem_name) {
+                    if (get_mem_name(mem_accesses[t][idx].addr, inits[t], mem_accesses[t], idx) != mem_name) {
                         consistent_base = false;
                         break;
                     }
@@ -193,8 +194,8 @@ inline std::vector<Relation> find_constant_relations(
                 }
             }
             if (stable) {
-                std::string lhs = get_mem_name(m1.addr, final_regs[0], mem_accesses[0], i);
-                std::string rhs = get_mem_name(m2.addr, final_regs[0], mem_accesses[0], j);
+                std::string lhs = get_mem_name(m1.addr, inits[0], mem_accesses[0], i);
+                std::string rhs = get_mem_name(m2.addr, inits[0], mem_accesses[0], j);
                 relations.push_back({ lhs, rhs, delta, true });
             }
         }
@@ -211,10 +212,10 @@ inline std::vector<Relation> find_constant_relations(
                 }
             }
             if (is_mov) {
-                std::string mem_name = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
+                std::string mem_name = get_mem_name(m0.addr, inits[0], mem_accesses[0], idx);
                 bool consistent = true;
                 for (int t = 1; t < trials; ++t) {
-                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != mem_name) {
+                    if (get_mem_name(mem_accesses[t][idx].addr, inits[t], mem_accesses[t], idx) != mem_name) {
                         consistent = false;
                         break;
                     }
@@ -232,10 +233,10 @@ inline std::vector<Relation> find_constant_relations(
                 }
             }
             if (is_add) {
-                std::string mem_name = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
+                std::string mem_name = get_mem_name(m0.addr, inits[0], mem_accesses[0], idx);
                 bool consistent = true;
                 for (int t = 1; t < trials; ++t) {
-                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != mem_name) {
+                    if (get_mem_name(mem_accesses[t][idx].addr, inits[t], mem_accesses[t], idx) != mem_name) {
                         consistent = false;
                         break;
                     }
@@ -252,10 +253,10 @@ inline std::vector<Relation> find_constant_relations(
                 }
             }
             if (is_sub) {
-                std::string mem_name = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
+                std::string mem_name = get_mem_name(m0.addr, inits[0], mem_accesses[0], idx);
                 bool consistent = true;
                 for (int t = 1; t < trials; ++t) {
-                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != mem_name) {
+                    if (get_mem_name(mem_accesses[t][idx].addr, inits[t], mem_accesses[t], idx) != mem_name) {
                         consistent = false;
                         break;
                     }
