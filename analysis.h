@@ -4,46 +4,39 @@
 #include <vector>
 #include <string>
 #include <set>
-#include <cmath>  
-
+#include <cmath>
 struct RegChange {
     std::string name;
     uint64_t old_val;
     uint64_t new_val;
 };
-
 struct MemAccessModel {
     bool is_write;
     uint64_t addr;
     uint64_t value;
     int reg_src;
 };
-
 struct Relation {
     std::string lhs;
     std::string rhs;
     int64_t delta;
     bool valid;
 };
-
 struct ExecutionResult {
     std::vector<RegChange> reg_changes;
     std::vector<MemAccessModel> mem_accesses;
     std::vector<Relation> relations;
 };
-
 inline std::string to_hex(uint64_t v) {
     char buf[32];
     snprintf(buf, sizeof(buf), "%llX", v);
     return std::string(buf);
 }
-
-
 std::string get_mem_name(uint64_t addr, const RegMap& regs, const std::vector<MemAccessModel>& accesses, size_t access_idx) {
     for (int reg_id : Simulator::TRACKED_REGS) {
         if (regs.find(reg_id) == regs.end()) continue;
         int64_t offset = static_cast<int64_t>(addr) - static_cast<int64_t>(regs.at(reg_id));
-        if (std::abs(offset) < 0x1000) {  
+        if (std::abs(offset) < 0x1000) {
             std::string reg_name = Simulator::reg_name(reg_id);
             if (offset == 0) {
                 return "mem[" + reg_name + "]";
@@ -54,7 +47,6 @@ std::string get_mem_name(uint64_t addr, const RegMap& regs, const std::vector<Me
     }
     return "mem[0x" + to_hex(addr) + "]";
 }
-
 inline std::vector<Relation> find_constant_relations(
     Simulator& sim,
     const std::vector<uint8_t>& code,
@@ -64,16 +56,12 @@ inline std::vector<Relation> find_constant_relations(
     std::vector<RegMap> inits(trials);
     std::vector<RegMap> final_regs(trials);
     std::vector<std::vector<MemAccessModel>> mem_accesses(trials);
-
-
     for (int t = 0; t < trials; ++t) {
         auto init = Simulator::make_random_regs();
         inits[t] = init;
         RegMap final;
         sim.emulate(code, init, final);
         final_regs[t] = final;
-
-
         std::vector<MemAccessModel> trial_mems;
         trial_mems.reserve(sim.mem_accesses.size());
         for (const auto& m : sim.mem_accesses) {
@@ -81,8 +69,6 @@ inline std::vector<Relation> find_constant_relations(
         }
         mem_accesses[t] = std::move(trial_mems);
     }
-
-    // 1. Check for registers set to constant values (independent of inputs)
     for (int reg_id : Simulator::TRACKED_REGS) {
         uint64_t const_val = final_regs[0][reg_id];
         bool is_constant = true;
@@ -96,7 +82,6 @@ inline std::vector<Relation> find_constant_relations(
             relations.push_back({ Simulator::reg_name(reg_id), "0x0", static_cast<int64_t>(const_val), true });
         }
     }
-
     for (int r1 : Simulator::TRACKED_REGS) {
         for (int r2 : Simulator::TRACKED_REGS) {
             if (r1 == r2) continue;
@@ -114,8 +99,6 @@ inline std::vector<Relation> find_constant_relations(
             }
         }
     }
-
-
     size_t num_accesses = mem_accesses[0].size();
     bool consistent_access_count = true;
     for (int t = 1; t < trials; ++t) {
@@ -125,19 +108,15 @@ inline std::vector<Relation> find_constant_relations(
         }
     }
     if (!consistent_access_count) {
-        return relations; 
+        return relations;
     }
-
-
     for (size_t idx = 0; idx < num_accesses; ++idx) {
         const auto& m0 = mem_accesses[0][idx];
-
-
         for (int reg_id : Simulator::TRACKED_REGS) {
             if (final_regs[0].find(reg_id) == final_regs[0].end()) continue;
             int64_t delta = static_cast<int64_t>(m0.value) - static_cast<int64_t>(final_regs[0][reg_id]);
             bool stable = true;
-            bool type_consistent = m0.is_write; 
+            bool type_consistent = m0.is_write;
             for (int t = 1; t < trials; ++t) {
                 const auto& mt = mem_accesses[t][idx];
                 if (mt.is_write != type_consistent) {
@@ -151,23 +130,26 @@ inline std::vector<Relation> find_constant_relations(
                 }
             }
             if (stable) {
-                std::string lhs = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
+                std::string mem_name = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
                 bool consistent_base = true;
                 for (int t = 1; t < trials; ++t) {
-                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != lhs) {
+                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != mem_name) {
                         consistent_base = false;
                         break;
                     }
                 }
                 if (!consistent_base) {
-                    lhs = "mem[unknown]";
+                    mem_name = "mem[unknown]";
                 }
-                relations.push_back({ lhs, Simulator::reg_name(reg_id), delta, true });
+                if (type_consistent) {
+                    relations.push_back({ mem_name, Simulator::reg_name(reg_id), delta, true });
+                }
+                else {
+                    relations.push_back({ Simulator::reg_name(reg_id), mem_name, -delta, true });
+                }
             }
         }
     }
-
-
     for (size_t i = 0; i < num_accesses; ++i) {
         for (size_t j = i + 1; j < num_accesses; ++j) {
             const auto& m1 = mem_accesses[0][i];
@@ -194,35 +176,11 @@ inline std::vector<Relation> find_constant_relations(
             }
         }
     }
-
-
     for (int reg_id : Simulator::TRACKED_REGS) {
         for (size_t idx = 0; idx < num_accesses; ++idx) {
             const auto& m0 = mem_accesses[0][idx];
-            if (m0.is_write) continue;  
+            if (m0.is_write) continue;
 
-            bool is_mov = true;
-            for (int t = 0; t < trials; ++t) {
-                if (final_regs[t][reg_id] != mem_accesses[t][idx].value) {
-                    is_mov = false;
-                    break;
-                }
-            }
-            if (is_mov) {
-                std::string mem_name = get_mem_name(m0.addr, final_regs[0], mem_accesses[0], idx);
-                bool consistent = true;
-                for (int t = 1; t < trials; ++t) {
-                    if (get_mem_name(mem_accesses[t][idx].addr, final_regs[t], mem_accesses[t], idx) != mem_name) {
-                        consistent = false;
-                        break;
-                    }
-                }
-                std::string rhs = (consistent ? mem_name : "mem[unknown]");
-                relations.push_back({ Simulator::reg_name(reg_id), rhs, 0, true });
-                continue;  
-            }
-
-    
             bool is_add = true;
             for (int t = 0; t < trials; ++t) {
                 if (final_regs[t][reg_id] != inits[t][reg_id] + mem_accesses[t][idx].value) {
@@ -243,8 +201,6 @@ inline std::vector<Relation> find_constant_relations(
                 relations.push_back({ Simulator::reg_name(reg_id), rhs, 0, true });
                 continue;
             }
-
-
             bool is_sub = true;
             for (int t = 0; t < trials; ++t) {
                 if (final_regs[t][reg_id] != inits[t][reg_id] - mem_accesses[t][idx].value) {
@@ -267,10 +223,8 @@ inline std::vector<Relation> find_constant_relations(
             }
         }
     }
-
     return relations;
 }
-
 ExecutionResult analyze_execution(Simulator& sim,
     const std::vector<uint8_t>& code,
     const RegMap& init_regs,
@@ -299,7 +253,6 @@ ExecutionResult analyze_execution(Simulator& sim,
     result.relations = find_constant_relations(sim, code, 5);
     return result;
 }
-
 inline void print_register_changes(const ExecutionResult& result) {
     std::cout << "--- Registers changed ---\n";
     for (auto& rc : result.reg_changes) {
@@ -307,7 +260,6 @@ inline void print_register_changes(const ExecutionResult& result) {
             << " -> 0x" << rc.new_val << "\n";
     }
 }
-
 inline void print_memory_accesses(const ExecutionResult& result) {
     std::cout << "--- Memory accesses ---\n";
     for (auto& ma : result.mem_accesses) {
@@ -319,7 +271,6 @@ inline void print_memory_accesses(const ExecutionResult& result) {
         std::cout << "\n";
     }
 }
-
 inline void print_relations(const ExecutionResult& result) {
     std::cout << "--- Constant relations ---\n";
     for (const auto& r : result.relations) {
