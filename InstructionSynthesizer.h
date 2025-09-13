@@ -33,7 +33,7 @@ public:
 
        
                 for (auto& ma : result.mem_accesses) {
-                    if ((kv.second == ma.addr) && (rc.new_val == ma.value) && !ma.is_write) {
+                    if ((kv.second == ma.address) && (rc.new_value == ma.value) && !ma.is_write) {
                         instructions.push_back("mov " + dst + ", [" + src + "]");
                         handled = true;
                         break;
@@ -42,25 +42,25 @@ public:
                 if (handled) break;
 
      
-                if (!handled && kv.second == rc.new_val && src != dst) {
+                if (!handled && kv.second == rc.new_value && src != dst) {
                     instructions.push_back("mov " + dst + ", " + src);
                     handled = true;
                 }
 
        
-                if (!handled && rc.new_val == rc.old_val + kv.second) {
+                if (!handled && rc.new_value == rc.old_value + kv.second) {
                     instructions.push_back("add " + dst + ", " + src);
                     handled = true;
                 }
 
           
-                if (!handled && rc.new_val == rc.old_val - kv.second) {
+                if (!handled && rc.new_value == rc.old_value - kv.second) {
                     instructions.push_back("sub " + dst + ", " + src);
                     handled = true;
                 }
 
         
-                if (!handled && rc.new_val == (rc.old_val ^ kv.second)) {
+                if (!handled && rc.new_value == (rc.old_value ^ kv.second)) {
                     instructions.push_back("xor " + dst + ", " + src);
                     handled = true;
                 }
@@ -69,19 +69,19 @@ public:
             }
 
             if (!handled) {
-                if (rc.new_val == ~rc.old_val) {
+                if (rc.new_value == ~rc.old_value) {
                     instructions.push_back("not " + dst);
                     handled = true;
                 }
-                else if (rc.new_val == (uint64_t)(-(int64_t)rc.old_val)) {
+                else if (rc.new_value == (uint64_t)(-(int64_t)rc.old_value)) {
                     instructions.push_back("neg " + dst);
                     handled = true;
                 }
-                else if (rc.new_val == rc.old_val + 1) {
+                else if (rc.new_value == rc.old_value + 1) {
                     instructions.push_back("inc " + dst);
                     handled = true;
                 }
-                else if (rc.new_val == rc.old_val - 1) {
+                else if (rc.new_value == rc.old_value - 1) {
                     instructions.push_back("dec " + dst);
                     handled = true;
                 }
@@ -90,19 +90,19 @@ public:
     
             if (!handled) {
                 for (int i = 1; i < 64; i++) {
-                    if ((int64_t)rc.new_val == ((int64_t)rc.old_val >> i)) {
+                    if ((int64_t)rc.new_value == ((int64_t)rc.old_value >> i)) {
                         instructions.push_back("sar " + dst + ", " + imm_hex(i));
                         handled = true; break;
                     }
-                    if (rc.new_val == (rc.old_val >> i)) {
+                    if (rc.new_value == (rc.old_value >> i)) {
                         instructions.push_back("shr " + dst + ", " + imm_hex(i));
                         handled = true; break;
                     }
-                    if (rc.new_val == (rc.old_val << i)) {
+                    if (rc.new_value == (rc.old_value << i)) {
                         instructions.push_back("shl " + dst + ", " + imm_hex(i));
                         handled = true; break;
                     }
-                    if (rc.new_val == ror(rc.old_val, i)) {
+                    if (rc.new_value == ror(rc.old_value, i)) {
                         instructions.push_back("ror " + dst + ", " + imm_hex(i));
                         handled = true; break;
                     }
@@ -176,8 +176,8 @@ public:
         for (auto& kv : init_regs) {
             std::string base = Simulator::reg_name(kv.first);
             for (auto& ma : result.mem_accesses) {
-                if ((kv.second == ma.addr) && ma.is_write && ma.reg_src != -1) {
-                    std::string src = Simulator::reg_name(ma.reg_src);
+                if ((kv.second == ma.address) && ma.is_write && ma.source_reg != -1) {
+                    std::string src = Simulator::reg_name(ma.source_reg);
                     instructions.push_back("mov [" + base + "], " + src);
                 }
             }
