@@ -212,20 +212,23 @@ inline std::vector<Relation> find_register_pair_deltas(const SimulationData& dat
     size_t trials = data.initial_regs.size();
 
     for (int r1 : Simulator::TRACKED_REGS) {
-        if (data.final_regs[0].find(r1) == data.final_regs[0].end()) continue;
         for (int r2 : Simulator::TRACKED_REGS) {
-            if (r1 == r2 || data.final_regs[0].find(r2) == data.final_regs[0].end()) continue;
+            if (r1 == r2) continue;
+
+            if (data.final_regs[0].find(r1) == data.final_regs[0].end()) continue;
+            if (data.initial_regs[0].find(r2) == data.initial_regs[0].end()) continue;
 
             int64_t delta;
             auto compute = [&](size_t t) {
-                auto it1 = data.final_regs[t].find(r1);
-                auto it2 = data.final_regs[t].find(r2);
-                if (it1 == data.final_regs[t].end() || it2 == data.final_regs[t].end()) return int64_t(0);
-                return static_cast<int64_t>(it1->second) - static_cast<int64_t>(it2->second);
+                auto fin_it = data.final_regs[t].find(r1);
+                auto init_it = data.initial_regs[t].find(r2);
+                if (fin_it == data.final_regs[t].end() || init_it == data.initial_regs[t].end()) return int64_t(0);
+
+                return static_cast<int64_t>(fin_it->second) - static_cast<int64_t>(init_it->second);
                 };
 
             if (is_stable_value(trials, compute, delta)) {
-                relations.push_back({ Simulator::reg_name(r1), Simulator::reg_name(r2), delta, true });
+                relations.push_back({ Simulator::reg_name(r1),  Simulator::reg_name(r2), delta, true });
             }
         }
     }
@@ -367,7 +370,6 @@ inline std::vector<Relation> find_constant_relations(Simulator& sim, const std::
     append(find_memory_register_relations(data));
     append(find_memory_pair_deltas(data));
     append(find_register_memory_operations(data));
-
     return relations;
 }
 

@@ -41,33 +41,6 @@ public:
             }
 
            
-            if (!handled) {
-                for (auto& kv : final_regs) {
-                    std::string src = Simulator::reg_name(kv.first);
-
-                    if (kv.second == rc.new_value && src != dst) {
-                        update_instructions.push_back("mov " + dst + ", " + src);
-                        handled = true;
-                    }
-
-                    if (!handled && rc.new_value == rc.old_value + kv.second) {
-                        update_instructions.push_back("add " + dst + ", " + src);
-                        handled = true;
-                    }
-
-                    if (!handled && rc.new_value == rc.old_value - kv.second) {
-                        update_instructions.push_back("sub " + dst + ", " + src);
-                        handled = true;
-                    }
-
-                    if (!handled && rc.new_value == (rc.old_value ^ kv.second)) {
-                        update_instructions.push_back("xor " + dst + ", " + src);
-                        handled = true;
-                    }
-
-                    if (handled) break;
-                }
-            }
 
 
             if (!handled) {
