@@ -27,9 +27,9 @@ public:
             std::string dst = rc.name;
             bool handled = false;
 
+
             for (auto& kv : init_regs) {
                 std::string src = Simulator::reg_name(kv.first);
-
                 for (auto& ma : result.mem_accesses) {
                     if ((kv.second == ma.address) && (rc.new_value == ma.value) && !ma.is_write) {
                         initial_instructions.push_back("mov " + dst + ", [" + src + "]");
@@ -43,27 +43,22 @@ public:
             if (!handled) {
                 for (auto& kv : init_regs) {
                     std::string src = Simulator::reg_name(kv.first);
-
                     if (kv.second == rc.new_value && src != dst) {
                         initial_instructions.push_back("mov " + dst + ", " + src);
                         handled = true;
                     }
-
-                    if (!handled && rc.new_value == rc.old_value + kv.second) {
+                    else if (rc.new_value == rc.old_value + kv.second) {
                         initial_instructions.push_back("add " + dst + ", " + src);
                         handled = true;
                     }
-
-                    if (!handled && rc.new_value == rc.old_value - kv.second) {
+                    else if (rc.new_value == rc.old_value - kv.second) {
                         initial_instructions.push_back("sub " + dst + ", " + src);
                         handled = true;
                     }
-
-                    if (!handled && rc.new_value == (rc.old_value ^ kv.second)) {
+                    else if (rc.new_value == (rc.old_value ^ kv.second)) {
                         initial_instructions.push_back("xor " + dst + ", " + src);
                         handled = true;
                     }
-
                     if (handled) break;
                 }
             }
@@ -117,7 +112,6 @@ public:
                                 std::string addr = mem_part.substr(4, mem_part.size() - 5);
                                 update_instructions.push_back("sub " + dst + ", [" + addr + "]");
                                 handled = true;
-                                break;
                             }
                         }
                         else if (rel.rhs.find("init_" + dst + " + ") == 0) {
@@ -126,10 +120,9 @@ public:
                                 std::string addr = mem_part.substr(4, mem_part.size() - 5);
                                 update_instructions.push_back("add " + dst + ", [" + addr + "]");
                                 handled = true;
-                                break;
                             }
                         }
-                        else if (rel.rhs.find("mem") != std::string::npos) {
+                        else if (rel.rhs.find("mem[") != std::string::npos) {
                             std::string base = rel.rhs.substr(4, rel.rhs.size() - 5);
                             if (rel.delta != 0) {
                                 std::string sign = (rel.delta > 0) ? " + " : " - ";
@@ -139,7 +132,6 @@ public:
                                 update_instructions.push_back("mov " + dst + ", [" + base + "]");
                             }
                             handled = true;
-                            break;
                         }
                         else if (rel.rhs == "0x0") {
                             if (rel.delta > 0) {
@@ -149,7 +141,6 @@ public:
                                 update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
                             }
                             handled = true;
-                            break;
                         }
                         else {
                             if (dst != rel.rhs) {
@@ -162,14 +153,13 @@ public:
                                 update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
                             }
                             handled = true;
-                            break;
                         }
+                        if (handled) break;
                     }
                 }
             }
         }
 
-        // Handle memory writes from memory_accesses
         for (auto& kv : init_regs) {
             std::string base = Simulator::reg_name(kv.first);
             for (auto& ma : result.mem_accesses) {
@@ -183,26 +173,34 @@ public:
 
         for (auto& rel : result.relations) {
             if (rel.valid && rel.lhs.find("mem[") == 0) {
-                std::string mem_addr = rel.lhs.substr(4, rel.lhs.size() - 5); 
+                std::string mem_addr = rel.lhs.substr(4, rel.lhs.size() - 5);
+                std::string src = rel.rhs;
+
+
+                if (src.find("mem[") != std::string::npos) {
+                    continue; 
+                }
+
                 std::string instr;
                 if (rel.delta == 0) {
-                    instr = "mov [" + mem_addr + "], " + rel.rhs;
+
+                    instr = "mov [" + mem_addr + "], " + src;
+                    update_instructions.push_back(instr);
                 }
                 else {
+                 
+                    update_instructions.push_back("mov RAX, " + src);
                     if (rel.delta > 0) {
-                        instr = "mov [" + mem_addr + "], " + rel.rhs;
-                        update_instructions.push_back(instr);
-                        instr = "add [" + mem_addr + "], " + imm_hex(rel.delta);
+                        update_instructions.push_back("add RAX, " + imm_hex(rel.delta));
                     }
                     else if (rel.delta < 0) {
-                        instr = "mov [" + mem_addr + "], " + rel.rhs;
-                        update_instructions.push_back(instr);
-                        instr = "sub [" + mem_addr + "], " + imm_hex(-rel.delta);
+                        update_instructions.push_back("sub RAX, " + imm_hex(-rel.delta));
                     }
+                    update_instructions.push_back("mov [" + mem_addr + "], RAX");
                 }
-                update_instructions.push_back(instr);
             }
         }
+
 
         std::vector<std::string> instructions = initial_instructions;
         instructions.insert(instructions.end(), update_instructions.begin(), update_instructions.end());
@@ -210,6 +208,7 @@ public:
         if (instructions.empty()) {
             instructions.push_back("nop");
         }
+
 
         out.asm_code = "";
         for (auto& instr : instructions) {
