@@ -40,9 +40,6 @@ public:
                 if (handled) break;
             }
 
-           
-
-
             if (!handled) {
                 for (auto& kv : init_regs) {
                     std::string src = Simulator::reg_name(kv.first);
@@ -111,7 +108,6 @@ public:
                 }
             }
 
-       
             if (!handled) {
                 for (auto& rel : result.relations) {
                     if (rel.lhs == dst && rel.valid) {
@@ -173,7 +169,7 @@ public:
             }
         }
 
-
+        // Handle memory writes from memory_accesses
         for (auto& kv : init_regs) {
             std::string base = Simulator::reg_name(kv.first);
             for (auto& ma : result.mem_accesses) {
@@ -184,7 +180,30 @@ public:
             }
         }
 
-        // Combine: initial first, then update
+
+        for (auto& rel : result.relations) {
+            if (rel.valid && rel.lhs.find("mem[") == 0) {
+                std::string mem_addr = rel.lhs.substr(4, rel.lhs.size() - 5); 
+                std::string instr;
+                if (rel.delta == 0) {
+                    instr = "mov [" + mem_addr + "], " + rel.rhs;
+                }
+                else {
+                    if (rel.delta > 0) {
+                        instr = "mov [" + mem_addr + "], " + rel.rhs;
+                        update_instructions.push_back(instr);
+                        instr = "add [" + mem_addr + "], " + imm_hex(rel.delta);
+                    }
+                    else if (rel.delta < 0) {
+                        instr = "mov [" + mem_addr + "], " + rel.rhs;
+                        update_instructions.push_back(instr);
+                        instr = "sub [" + mem_addr + "], " + imm_hex(-rel.delta);
+                    }
+                }
+                update_instructions.push_back(instr);
+            }
+        }
+
         std::vector<std::string> instructions = initial_instructions;
         instructions.insert(instructions.end(), update_instructions.begin(), update_instructions.end());
 
