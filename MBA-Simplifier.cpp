@@ -44,9 +44,8 @@ int main(int argc, char** argv) {
     }
     std::cout << std::endl;
 
-    print_register_changes(result);
-    print_memory_accesses(result);
-    print_relations(result);
+    print_execution_result(result);
+
     RegMap final_regs_synth;
     init_regs = Simulator::make_random_regs();
     sim.emulate(original_code, init_regs, final_regs_original);
