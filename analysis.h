@@ -18,7 +18,7 @@ struct MemoryAccess {
     bool is_write;
     uint64_t address;
     uint64_t value;
-    int source_reg; // register id that generated the access, -1 if unknown
+    int source_reg;
 };
 
 struct Relation {
@@ -133,23 +133,77 @@ std::vector<Relation> find_relations_generic(
         int64_t delta;
         auto fn = [&](size_t t) { return compute(t, lhs, rhs); };
         if (is_stable_value(trials, fn, delta)) {
-            // skip meaningless ones like RBX = RBX with delta=0
             if (delta == 0 && lhs == rhs) continue;
             relations.push_back(make_relation(lhs, rhs, delta));
         }
     }
-    // remove duplicates
     auto end_it = std::unique(relations.begin(), relations.end());
     relations.erase(end_it, relations.end());
     return relations;
 }
 
+// ---------------- Subregister specs ----------------
+struct SubRegSpec {
+    int base_reg;
+    std::string name;
+    uint64_t mask;
+};
+
+inline std::vector<SubRegSpec> get_subregs_for(int reg_id) {
+    const uint64_t M32 = 0xFFFFFFFFULL;
+    const uint64_t M16 = 0xFFFFULL;
+    const uint64_t M8 = 0xFFULL;
+
+    switch (reg_id) {
+    case UC_X86_REG_RAX:
+        return { {reg_id, "EAX", M32}, {reg_id, "AX", M16}, {reg_id, "AL", M8} };
+    case UC_X86_REG_RBX:
+        return { {reg_id, "EBX", M32}, {reg_id, "BX", M16}, {reg_id, "BL", M8} };
+    case UC_X86_REG_RCX:
+        return { {reg_id, "ECX", M32}, {reg_id, "CX", M16}, {reg_id, "CL", M8} };
+    case UC_X86_REG_RDX:
+        return { {reg_id, "EDX", M32}, {reg_id, "DX", M16}, {reg_id, "DL", M8} };
+    case UC_X86_REG_RSI:
+        return { {reg_id, "ESI", M32}, {reg_id, "SI", M16}, {reg_id, "SIL", M8} };
+    case UC_X86_REG_RDI:
+        return { {reg_id, "EDI", M32}, {reg_id, "DI", M16}, {reg_id, "DIL", M8} };
+    case UC_X86_REG_RSP:
+        return { {reg_id, "ESP", M32}, {reg_id, "SP", M16}, {reg_id, "SPL", M8} };
+    case UC_X86_REG_RBP:
+        return { {reg_id, "EBP", M32}, {reg_id, "BP", M16}, {reg_id, "BPL", M8} };
+    case UC_X86_REG_R8:
+        return { {reg_id, "R8D", M32},  {reg_id, "R8W", M16},  {reg_id, "R8B", M8} };
+    case UC_X86_REG_R9:
+        return { {reg_id, "R9D", M32},  {reg_id, "R9W", M16},  {reg_id, "R9B", M8} };
+    case UC_X86_REG_R10:
+        return { {reg_id, "R10D", M32}, {reg_id, "R10W", M16}, {reg_id, "R10B", M8} };
+    case UC_X86_REG_R11:
+        return { {reg_id, "R11D", M32}, {reg_id, "R11W", M16}, {reg_id, "R11B", M8} };
+    case UC_X86_REG_R12:
+        return { {reg_id, "R12D", M32}, {reg_id, "R12W", M16}, {reg_id, "R12B", M8} };
+    case UC_X86_REG_R13:
+        return { {reg_id, "R13D", M32}, {reg_id, "R13W", M16}, {reg_id, "R13B", M8} };
+    case UC_X86_REG_R14:
+        return { {reg_id, "R14D", M32}, {reg_id, "R14W", M16}, {reg_id, "R14B", M8} };
+    case UC_X86_REG_R15:
+        return { {reg_id, "R15D", M32}, {reg_id, "R15W", M16}, {reg_id, "R15B", M8} };
+    default:
+        return {};
+    }
+}
+
+inline uint64_t extract_masked(const RegMap& regs, int base_reg, uint64_t mask) {
+    auto it = regs.find(base_reg);
+    if (it == regs.end()) return 0;
+    return it->second & mask;
+}
+
 // ---------------- Register Relations ----------------
-inline std::vector<Relation> find_register_relations(const SimulationData& data) {
+inline std::vector<Relation> find_register_relations(const SimulationData& data, bool allow_subregs = true) {
     size_t trials = data.initial_regs.size();
     std::vector<Relation> out;
 
-    // Constant registers
+    // ---------------- 1) constants for 64-bit regs ----------------
     for (int reg_id : Simulator::TRACKED_REGS) {
         uint64_t constant;
         auto compute = [&](size_t t) {
@@ -162,12 +216,12 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data)
         }
     }
 
-    // Delta with self
+    // ---------------- 2) self-deltas for 64-bit regs ----------------
     auto self_deltas = find_relations_generic(
         trials,
         []() {
             std::vector<std::pair<int, int>> v;
-            for (int r : Simulator::TRACKED_REGS) v.push_back({ r,r });
+            for (int r : Simulator::TRACKED_REGS) v.push_back({ r, r });
             return v;
         },
         [&](size_t t, int r1, int r2) {
@@ -177,25 +231,27 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data)
         },
         [&](int r1, int r2, int64_t d) {
             std::string name = Simulator::reg_name(r1);
-            return Relation{ name, name, d, true };
+            return Relation{ name, "init_" + name, d, true };
         }
     );
     out.insert(out.end(), self_deltas.begin(), self_deltas.end());
 
-    // Pair deltas
+    // ---------------- 3) pair deltas for 64-bit regs ----------------
     auto pair_deltas = find_relations_generic(
         trials,
         []() {
             std::vector<std::pair<int, int>> v;
             for (int r1 : Simulator::TRACKED_REGS)
                 for (int r2 : Simulator::TRACKED_REGS)
-                    if (r1 != r2) v.push_back({ r1,r2 });
+                    if (r1 != r2) v.push_back({ r1, r2 });
             return v;
         },
         [&](size_t t, int r1, int r2) {
-            auto fin = data.final_regs[t].at(r1);
-            auto init = data.initial_regs[t].at(r2);
-            return static_cast<int64_t>(fin) - static_cast<int64_t>(init);
+            auto fin = data.final_regs[t].find(r1);
+            auto init = data.initial_regs[t].find(r2);
+            uint64_t fin_val = (fin != data.final_regs[t].end()) ? fin->second : 0;
+            uint64_t init_val = (init != data.initial_regs[t].end()) ? init->second : 0;
+            return static_cast<int64_t>(fin_val) - static_cast<int64_t>(init_val);
         },
         [&](int r1, int r2, int64_t d) {
             return Relation{ Simulator::reg_name(r1), Simulator::reg_name(r2), d, true };
@@ -203,6 +259,280 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data)
     );
     out.insert(out.end(), pair_deltas.begin(), pair_deltas.end());
 
+    // If we found anything for full-64-bit regs, return (keep original behavior).
+    if (!out.empty()) {
+        auto end_it = std::unique(out.begin(), out.end());
+        out.erase(end_it, out.end());
+        return out;
+    }
+
+    // If subregister fallback is disabled, return empty now.
+    if (!allow_subregs) {
+        return out;
+    }
+
+    // ---------------- Fallback: try relations on smaller subregisters ----------------
+    struct VReg { int base_reg; std::string name; uint64_t mask; };
+    std::vector<VReg> vregs;
+    for (int r : Simulator::TRACKED_REGS) {
+        auto subs = get_subregs_for(r);
+        for (auto& s : subs) vregs.push_back({ s.base_reg, s.name, s.mask });
+    }
+
+    if (vregs.empty()) return out;
+
+    size_t N = vregs.size();
+
+    // constants for subregs
+    for (size_t i = 0; i < N; ++i) {
+        uint64_t constant;
+        auto compute = [&](size_t t) {
+            return extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+            };
+        if (is_stable_value(trials, compute, constant) && constant != 0) {
+            out.push_back({ vregs[i].name, "0x0", static_cast<int64_t>(constant), true });
+        }
+    }
+
+    // self deltas for subregs: final(sub_i) - init(sub_i)
+    for (size_t i = 0; i < N; ++i) {
+        int64_t delta;
+        auto fn = [&](size_t t) {
+            uint64_t fin = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+            uint64_t init = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+            return static_cast<int64_t>(fin) - static_cast<int64_t>(init);
+            };
+        if (is_stable_value(trials, fn, delta)) {
+            if (delta == 0) continue;
+            out.push_back({ vregs[i].name, "init_" + vregs[i].name, delta, true });
+        }
+    }
+
+    // pair deltas across subregs: final(sub_i) - init(sub_j)
+    for (size_t i = 0; i < N; ++i) {
+        for (size_t j = 0; j < N; ++j) {
+            if (i == j) continue;
+            int64_t delta;
+            auto fn = [&](size_t t) {
+                uint64_t fin = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t init = extract_masked(data.initial_regs[t], vregs[j].base_reg, vregs[j].mask);
+                return static_cast<int64_t>(fin) - static_cast<int64_t>(init);
+                };
+            if (is_stable_value(trials, fn, delta)) {
+                out.push_back({ vregs[i].name, vregs[j].name, delta, true });
+            }
+        }
+    }
+
+    auto end_it = std::unique(out.begin(), out.end());
+    out.erase(end_it, out.end());
+    return out;
+}
+
+// ---------------- Register-Register Operations ----------------
+inline std::vector<Relation> find_register_register_operations(const SimulationData& data, bool allow_subregs = true) {
+    std::vector<Relation> out;
+    size_t trials = data.initial_regs.size();
+
+    if (!allow_subregs) {
+        // Full 64-bit registers
+        for (int r1 : Simulator::TRACKED_REGS) {
+            std::string reg1_name = Simulator::reg_name(r1);
+            for (int r2 : Simulator::TRACKED_REGS) {
+                if (r1 == r2) continue;
+                std::string reg2_name = Simulator::reg_name(r2);
+
+                // Check for ADD r1, r2: final_r1 == init_r1 + init_r2
+                auto add_pred = [&](size_t t) -> bool {
+                    uint64_t f = data.final_regs[t].at(r1);
+                    uint64_t i1 = data.initial_regs[t].at(r1);
+                    uint64_t i2 = data.initial_regs[t].at(r2);
+                    return f == i1 + i2;
+                    };
+                if (all_trials_match(trials, add_pred)) {
+                    std::string rhs = "init_" + reg1_name + " + " + reg2_name;
+                    out.push_back({ reg1_name, rhs, 0, true });
+                    continue;
+                }
+
+                // Check for SUB r1, r2: final_r1 == init_r1 - init_r2
+                auto sub_pred = [&](size_t t) -> bool {
+                    uint64_t f = data.final_regs[t].at(r1);
+                    uint64_t i1 = data.initial_regs[t].at(r1);
+                    uint64_t i2 = data.initial_regs[t].at(r2);
+                    return f == i1 - i2;
+                    };
+                if (all_trials_match(trials, sub_pred)) {
+                    std::string rhs = "init_" + reg1_name + " - " + reg2_name;
+                    out.push_back({ reg1_name, rhs, 0, true });
+                    continue;
+                }
+
+                // Check for XOR r1, r2: final_r1 == init_r1 ^ init_r2
+                auto xor_pred = [&](size_t t) -> bool {
+                    uint64_t f = data.final_regs[t].at(r1);
+                    uint64_t i1 = data.initial_regs[t].at(r1);
+                    uint64_t i2 = data.initial_regs[t].at(r2);
+                    return f == (i1 ^ i2);
+                    };
+                if (all_trials_match(trials, xor_pred)) {
+                    std::string rhs = "init_" + reg1_name + " ^ " + reg2_name;
+                    out.push_back({ reg1_name, rhs, 0, true });
+                    continue;
+                }
+            }
+        }
+    }
+    else {
+        // Subregister mode
+        struct VReg { int base_reg; std::string name; uint64_t mask; };
+        std::vector<VReg> vregs;
+        for (int r : Simulator::TRACKED_REGS) {
+            auto subs = get_subregs_for(r);
+            for (auto& s : subs) vregs.push_back({ s.base_reg, s.name, s.mask });
+        }
+        size_t N = vregs.size();
+        const uint64_t M32 = 0xFFFFFFFFULL;  // For masking results
+
+        for (size_t i = 0; i < N; ++i) {
+            std::string name1 = vregs[i].name;
+            uint64_t mask1 = vregs[i].mask;
+            for (size_t j = 0; j < N; ++j) {
+                if (i == j) continue;
+                std::string name2 = vregs[j].name;
+                uint64_t mask2 = vregs[j].mask;
+
+                // Check for ADD: final_sub1 == (init_sub1 + init_sub2) & mask1
+                auto add_pred = [&](size_t t) -> bool {
+                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, mask1);
+                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, mask1);
+                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, mask2);
+                    uint64_t sum = i1 + i2;
+                    return f == (sum & mask1);
+                    };
+                if (all_trials_match(trials, add_pred)) {
+                    std::string rhs = "init_" + name1 + " + " + name2;
+                    out.push_back({ name1, rhs, 0, true });
+                    continue;
+                }
+
+                // Check for SUB: final_sub1 == (init_sub1 - init_sub2) & mask1
+                auto sub_pred = [&](size_t t) -> bool {
+                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, mask1);
+                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, mask1);
+                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, mask2);
+                    uint64_t diff = i1 - i2;
+                    return f == (diff & mask1);
+                    };
+                if (all_trials_match(trials, sub_pred)) {
+                    std::string rhs = "init_" + name1 + " - " + name2;
+                    out.push_back({ name1, rhs, 0, true });
+                    continue;
+                }
+
+                // Check for XOR: final_sub1 == (init_sub1 ^ init_sub2) & mask1
+                auto xor_pred = [&](size_t t) -> bool {
+                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, mask1);
+                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, mask1);
+                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, mask2);
+                    return f == ((i1 ^ i2) & mask1);
+                    };
+                if (all_trials_match(trials, xor_pred)) {
+                    std::string rhs = "init_" + name1 + " ^ " + name2;
+                    out.push_back({ name1, rhs, 0, true });
+                    continue;
+                }
+            }
+        }
+    }
+
+    // remove duplicates
+    auto end_it = std::unique(out.begin(), out.end());
+    out.erase(end_it, out.end());
+    return out;
+}
+
+// ---------------- Unary Special Operations ----------------
+inline std::vector<Relation> find_unary_special(const SimulationData& data) {
+    std::vector<Relation> out;
+    size_t trials = data.initial_regs.size();
+
+    for (int reg_id : Simulator::TRACKED_REGS) {
+        std::string reg_name = Simulator::reg_name(reg_id);
+
+        auto pred_not = [&](size_t t) {
+            uint64_t f = data.final_regs[t].at(reg_id);
+            uint64_t i = data.initial_regs[t].at(reg_id);
+            return f == ~i;
+            };
+        if (all_trials_match(trials, pred_not)) {
+            out.push_back({ reg_name, "~init_" + reg_name, 0, true });
+            continue;
+        }
+
+        auto pred_neg = [&](size_t t) {
+            uint64_t f = data.final_regs[t].at(reg_id);
+            uint64_t i = data.initial_regs[t].at(reg_id);
+            return f == static_cast<uint64_t>(-static_cast<int64_t>(i));
+            };
+        if (all_trials_match(trials, pred_neg)) {
+            out.push_back({ reg_name, "-init_" + reg_name, 0, true });
+            continue;
+        }
+    }
+    return out;
+}
+
+// ---------------- Shift Operations ----------------
+inline std::vector<Relation> find_shift_operations(const SimulationData& data) {
+    std::vector<Relation> out;
+    size_t trials = data.initial_regs.size();
+
+    for (int reg_id : Simulator::TRACKED_REGS) {
+        std::string reg_name = Simulator::reg_name(reg_id);
+
+        for (int k = 1; k < 64; ++k) {
+            auto pred_shl = [&](size_t t) {
+                uint64_t f = data.final_regs[t].at(reg_id);
+                uint64_t i = data.initial_regs[t].at(reg_id);
+                return f == (i << k);
+                };
+            if (all_trials_match(trials, pred_shl)) {
+                out.push_back({ reg_name, "init_" + reg_name + " << " + std::to_string(k), 0, true });
+                break;
+            }
+
+            auto pred_shr = [&](size_t t) {
+                uint64_t f = data.final_regs[t].at(reg_id);
+                uint64_t i = data.initial_regs[t].at(reg_id);
+                return f == (i >> k);
+                };
+            if (all_trials_match(trials, pred_shr)) {
+                out.push_back({ reg_name, "init_" + reg_name + " >> " + std::to_string(k), 0, true });
+                break;
+            }
+
+            auto pred_sar = [&](size_t t) {
+                uint64_t f = data.final_regs[t].at(reg_id);
+                uint64_t i = data.initial_regs[t].at(reg_id);
+                return f == static_cast<uint64_t>(static_cast<int64_t>(i) >> k);
+                };
+            if (all_trials_match(trials, pred_sar)) {
+                out.push_back({ reg_name, "init_" + reg_name + " sar " + std::to_string(k), 0, true });
+                break;
+            }
+
+            auto pred_ror = [&](size_t t) {
+                uint64_t f = data.final_regs[t].at(reg_id);
+                uint64_t i = data.initial_regs[t].at(reg_id);
+                return f == (i >> k | i << (64 - k));
+                };
+            if (all_trials_match(trials, pred_ror)) {
+                out.push_back({ reg_name, "init_" + reg_name + " ror " + std::to_string(k), 0, true });
+                break;
+            }
+        }
+    }
     return out;
 }
 
@@ -212,7 +542,6 @@ inline std::vector<Relation> find_memory_relations(const SimulationData& data) {
     size_t num_accesses = data.memory_accesses.empty() ? 0 : data.memory_accesses[0].size();
     std::vector<Relation> out;
 
-    // Memory-register relations
     for (size_t idx = 0; idx < num_accesses; ++idx) {
         bool is_write = data.memory_accesses[0][idx].is_write;
         if (!std::all_of(data.memory_accesses.begin() + 1, data.memory_accesses.end(),
@@ -241,7 +570,6 @@ inline std::vector<Relation> find_memory_relations(const SimulationData& data) {
         out.insert(out.end(), rels.begin(), rels.end());
     }
 
-    // Memory pair deltas
     auto mem_pairs = find_relations_generic(
         trials,
         [&]() {
@@ -304,7 +632,6 @@ inline std::vector<Relation> find_register_memory_operations(const SimulationDat
             }
         }
     }
-    // remove duplicates
     auto end_it = std::unique(out.begin(), out.end());
     out.erase(end_it, out.end());
     return out;
@@ -318,16 +645,53 @@ inline std::vector<Relation> find_constant_relations(Simulator& sim,
     if (!is_access_count_consistent(data)) return {};
 
     std::vector<Relation> relations;
-    auto append = [&](const auto& r) {
-        relations.insert(relations.end(), r.begin(), r.end());
+
+    auto regs = find_register_relations(data, /*allow_subregs=*/false);
+    relations.insert(relations.end(), regs.begin(), regs.end());
+
+    auto regrreg_full = find_register_register_operations(data, /*allow_subregs=*/false);
+    relations.insert(relations.end(), regrreg_full.begin(), regrreg_full.end());
+
+    auto unary_special = find_unary_special(data);
+    relations.insert(relations.end(), unary_special.begin(), unary_special.end());
+
+    auto shifts = find_shift_operations(data);
+    relations.insert(relations.end(), shifts.begin(), shifts.end());
+
+    auto mems = find_memory_relations(data);
+    relations.insert(relations.end(), mems.begin(), mems.end());
+
+    auto regmem = find_register_memory_operations(data);
+    relations.insert(relations.end(), regmem.begin(), regmem.end());
+
+    if (relations.empty()) {
+        auto regs_sub = find_register_relations(data, /*allow_subregs=*/true);
+        relations.insert(relations.end(), regs_sub.begin(), regs_sub.end());
+
+        auto regrreg_sub = find_register_register_operations(data, /*allow_subregs=*/true);
+        relations.insert(relations.end(), regrreg_sub.begin(), regrreg_sub.end());
+    }
+
+    auto relation_cmp = [](const Relation& a, const Relation& b) {
+        if (a.lhs != b.lhs) return a.lhs < b.lhs;
+        if (a.rhs != b.rhs) return a.rhs < b.rhs;
+        if (a.delta != b.delta) return a.delta < b.delta;
+        return a.valid < b.valid;
         };
 
-    append(find_register_relations(data));
-    append(find_memory_relations(data));
-    append(find_register_memory_operations(data));
+    std::sort(relations.begin(), relations.end(), relation_cmp);
 
-    auto end_it = std::unique(relations.begin(), relations.end());
-    relations.erase(end_it, relations.end());
+    relations.erase(std::unique(relations.begin(), relations.end(),
+        [](const Relation& a, const Relation& b) {
+            return a.lhs == b.lhs && a.rhs == b.rhs && a.delta == b.delta;
+        }), relations.end());
+
+    relations.erase(std::remove_if(relations.begin(), relations.end(),
+        [](const Relation& r) {
+            if (r.lhs == r.rhs && r.delta == 0) return true;
+            return false;
+        }), relations.end());
+
     return relations;
 }
 
@@ -357,7 +721,7 @@ inline void print_execution_result(const ExecutionResult& result) {
     std::cout << "--- Registers Changed ---\n";
     for (const auto& rc : result.reg_changes)
         std::cout << rc.name << ": 0x" << std::hex << rc.old_value
-        << " -> 0x" << rc.new_value << "\n";
+        << " -> 0x" << rc.new_value << std::dec << "\n";
 
     std::cout << "--- Memory Accesses ---\n";
     for (const auto& ma : result.mem_accesses) {
@@ -366,12 +730,13 @@ inline void print_execution_result(const ExecutionResult& result) {
             << " val=0x" << ma.value;
         if (ma.source_reg != -1)
             std::cout << " (from reg: " << Simulator::reg_name(ma.source_reg) << ")";
-        std::cout << "\n";
+        std::cout << std::dec << "\n";
     }
 
     std::cout << "--- Constant Relations ---\n";
     for (const auto& r : result.relations) {
         if (!r.valid) continue;
+        if (r.lhs == r.rhs && r.delta == 0) continue;
         std::cout << r.lhs << " = " << r.rhs;
         if (r.delta > 0) std::cout << " + 0x" << std::hex << r.delta;
         else if (r.delta < 0) std::cout << " - 0x" << std::hex << -r.delta;

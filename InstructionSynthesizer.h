@@ -27,12 +27,12 @@ public:
             std::string dst = rc.name;
             bool handled = false;
 
-
+            // Check memory loads
             for (auto& kv : init_regs) {
                 std::string src = Simulator::reg_name(kv.first);
                 for (auto& ma : result.mem_accesses) {
                     if ((kv.second == ma.address) && (rc.new_value == ma.value) && !ma.is_write) {
-                        initial_instructions.push_back("mov " + dst + ", [" + src + "]");
+                        update_instructions.push_back("mov " + dst + ", [" + src + "]");
                         handled = true;
                         break;
                     }
@@ -41,125 +41,243 @@ public:
             }
 
             if (!handled) {
-                for (auto& kv : init_regs) {
-                    std::string src = Simulator::reg_name(kv.first);
-                    if (kv.second == rc.new_value && src != dst) {
-                        initial_instructions.push_back("mov " + dst + ", " + src);
-                        handled = true;
-                    }
-                    else if (rc.new_value == rc.old_value + kv.second) {
-                        initial_instructions.push_back("add " + dst + ", " + src);
-                        handled = true;
-                    }
-                    else if (rc.new_value == rc.old_value - kv.second) {
-                        initial_instructions.push_back("sub " + dst + ", " + src);
-                        handled = true;
-                    }
-                    else if (rc.new_value == (rc.old_value ^ kv.second)) {
-                        initial_instructions.push_back("xor " + dst + ", " + src);
-                        handled = true;
-                    }
-                    if (handled) break;
-                }
-            }
-
-            if (!handled) {
-                if (rc.new_value == ~rc.old_value) {
-                    initial_instructions.push_back("not " + dst);
-                    handled = true;
-                }
-                else if (rc.new_value == (uint64_t)(-(int64_t)rc.old_value)) {
-                    initial_instructions.push_back("neg " + dst);
-                    handled = true;
-                }
-                else if (rc.new_value == rc.old_value + 1) {
-                    initial_instructions.push_back("inc " + dst);
-                    handled = true;
-                }
-                else if (rc.new_value == rc.old_value - 1) {
-                    initial_instructions.push_back("dec " + dst);
-                    handled = true;
-                }
-            }
-
-            if (!handled) {
-                for (int i = 1; i < 64; i++) {
-                    if ((int64_t)rc.new_value == ((int64_t)rc.old_value >> i)) {
-                        initial_instructions.push_back("sar " + dst + ", " + imm_hex(i));
-                        handled = true; break;
-                    }
-                    if (rc.new_value == (rc.old_value >> i)) {
-                        initial_instructions.push_back("shr " + dst + ", " + imm_hex(i));
-                        handled = true; break;
-                    }
-                    if (rc.new_value == (rc.old_value << i)) {
-                        initial_instructions.push_back("shl " + dst + ", " + imm_hex(i));
-                        handled = true; break;
-                    }
-                    if (rc.new_value == ror(rc.old_value, i)) {
-                        initial_instructions.push_back("ror " + dst + ", " + imm_hex(i));
-                        handled = true; break;
-                    }
-                }
-            }
-
-            if (!handled) {
-                for (auto& rel : result.relations) {
-                    if (rel.lhs == dst && rel.valid) {
-                        if (rel.rhs.find("init_" + dst + " - ") == 0) {
-                            std::string mem_part = rel.rhs.substr(("init_" + dst + " - ").length());
-                            if (mem_part.find("mem[") == 0) {
-                                std::string addr = mem_part.substr(4, mem_part.size() - 5);
-                                update_instructions.push_back("sub " + dst + ", [" + addr + "]");
-                                handled = true;
-                            }
+                // Handle subregister relations
+                auto subregs = get_subreg_names(dst);
+                bool sub_handled = false;
+                for (const std::string& sub_dst : subregs) {
+                    for (const auto& rel : result.relations) {
+                        if (rel.lhs != sub_dst || !rel.valid) continue;
+                        std::string instr;
+                        if (rel.rhs.find("init_" + sub_dst + " - ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " - ").length();
+                            std::string src = rel.rhs.substr(pos);
+                            instr = "sub " + sub_dst + ", " + src;
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
                         }
-                        else if (rel.rhs.find("init_" + dst + " + ") == 0) {
-                            std::string mem_part = rel.rhs.substr(("init_" + dst + " + ").length());
-                            if (mem_part.find("mem[") == 0) {
-                                std::string addr = mem_part.substr(4, mem_part.size() - 5);
-                                update_instructions.push_back("add " + dst + ", [" + addr + "]");
-                                handled = true;
-                            }
+                        else if (rel.rhs.find("init_" + sub_dst + " + ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " + ").length();
+                            std::string src = rel.rhs.substr(pos);
+                            instr = "add " + sub_dst + ", " + src;
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
                         }
-                        else if (rel.rhs.find("mem[") != std::string::npos) {
-                            std::string base = rel.rhs.substr(4, rel.rhs.size() - 5);
-                            if (rel.delta != 0) {
-                                std::string sign = (rel.delta > 0) ? " + " : " - ";
-                                update_instructions.push_back("mov " + dst + ", [" + base + sign + imm_hex(std::abs(rel.delta)) + "]");
+                        else if (rel.rhs.find("init_" + sub_dst + " ^ ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " ^ ").length();
+                            std::string src = rel.rhs.substr(pos);
+                            instr = "xor " + sub_dst + ", " + src;
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs == "init_" + sub_dst) {
+                            if (rel.delta == 1) {
+                                update_instructions.push_back("inc " + sub_dst);
                             }
-                            else {
-                                update_instructions.push_back("mov " + dst + ", [" + base + "]");
+                            else if (rel.delta == -1) {
+                                update_instructions.push_back("dec " + sub_dst);
                             }
-                            handled = true;
+                            else if (rel.delta > 0) {
+                                update_instructions.push_back("add " + sub_dst + ", " + imm_hex(rel.delta));
+                            }
+                            else if (rel.delta < 0) {
+                                update_instructions.push_back("sub " + sub_dst + ", " + imm_hex(-rel.delta));
+                            }
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs == "~init_" + sub_dst) {
+                            update_instructions.push_back("not " + sub_dst);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs == "-init_" + sub_dst) {
+                            update_instructions.push_back("neg " + sub_dst);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs.find("init_" + sub_dst + " << ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " << ").length();
+                            std::string k = rel.rhs.substr(pos);
+                            update_instructions.push_back("shl " + sub_dst + ", " + k);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs.find("init_" + sub_dst + " >> ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " >> ").length();
+                            std::string k = rel.rhs.substr(pos);
+                            update_instructions.push_back("shr " + sub_dst + ", " + k);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs.find("init_" + sub_dst + " sar ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " sar ").length();
+                            std::string k = rel.rhs.substr(pos);
+                            update_instructions.push_back("sar " + sub_dst + ", " + k);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs.find("init_" + sub_dst + " ror ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " ror ").length();
+                            std::string k = rel.rhs.substr(pos);
+                            update_instructions.push_back("ror " + sub_dst + ", " + k);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.delta == 0 && rel.rhs.find("mem[") == 0) {
+                            std::string mem = rel.rhs;
+                            instr = "mov " + sub_dst + ", " + mem;
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
                         }
                         else if (rel.rhs == "0x0") {
-                            if (rel.delta > 0) {
-                                update_instructions.push_back("add " + dst + ", " + imm_hex(rel.delta));
-                            }
-                            else if (rel.delta < 0) {
-                                update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
-                            }
-                            handled = true;
+                            instr = "mov " + sub_dst + ", " + imm_hex(rel.delta);
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
                         }
                         else {
-                            if (dst != rel.rhs) {
-                                update_instructions.push_back("mov " + dst + ", " + rel.rhs);
+                            instr = "mov " + sub_dst + ", " + rel.rhs;
+                            update_instructions.push_back(instr);
+                            if (rel.delta != 0) {
+                                if (rel.delta > 0) {
+                                    update_instructions.push_back("add " + sub_dst + ", " + imm_hex(rel.delta));
+                                }
+                                else if (rel.delta < 0) {
+                                    update_instructions.push_back("sub " + sub_dst + ", " + imm_hex(-rel.delta));
+                                }
                             }
-                            if (rel.delta > 0) {
-                                update_instructions.push_back("add " + dst + ", " + imm_hex(rel.delta));
-                            }
-                            else if (rel.delta < 0) {
-                                update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
-                            }
-                            handled = true;
+                            sub_handled = true;
+                            break;
                         }
-                        if (handled) break;
+                    }
+                    if (sub_handled) break;
+                }
+                if (sub_handled) {
+                    handled = true;
+                }
+                else {
+                    // Full register relations
+                    for (auto& rel : result.relations) {
+                        if (rel.lhs == dst && rel.valid) {
+                            if (rel.rhs.find("init_" + dst + " - ") == 0) {
+                                std::string op_part = rel.rhs.substr(("init_" + dst + " - ").length());
+                                if (op_part.find("mem[") == 0) {
+                                    std::string addr = op_part.substr(4, op_part.size() - 5);
+                                    update_instructions.push_back("sub " + dst + ", [" + addr + "]");
+                                    handled = true;
+                                }
+                                else {
+                                    update_instructions.push_back("sub " + dst + ", " + op_part);
+                                    handled = true;
+                                }
+                            }
+                            else if (rel.rhs.find("init_" + dst + " + ") == 0) {
+                                std::string op_part = rel.rhs.substr(("init_" + dst + " + ").length());
+                                if (op_part.find("mem[") == 0) {
+                                    std::string addr = op_part.substr(4, op_part.size() - 5);
+                                    update_instructions.push_back("add " + dst + ", [" + addr + "]");
+                                    handled = true;
+                                }
+                                else {
+                                    update_instructions.push_back("add " + dst + ", " + op_part);
+                                    handled = true;
+                                }
+                            }
+                            else if (rel.rhs.find("init_" + dst + " ^ ") == 0) {
+                                std::string op_part = rel.rhs.substr(("init_" + dst + " ^ ").length());
+                                update_instructions.push_back("xor " + dst + ", " + op_part);
+                                handled = true;
+                            }
+                            else if (rel.rhs == "init_" + dst) {
+                                if (rel.delta == 1) {
+                                    update_instructions.push_back("inc " + dst);
+                                }
+                                else if (rel.delta == -1) {
+                                    update_instructions.push_back("dec " + dst);
+                                }
+                                else if (rel.delta > 0) {
+                                    update_instructions.push_back("add " + dst + ", " + imm_hex(rel.delta));
+                                }
+                                else if (rel.delta < 0) {
+                                    update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
+                                }
+                                handled = true;
+                            }
+                            else if (rel.rhs == "~init_" + dst) {
+                                update_instructions.push_back("not " + dst);
+                                handled = true;
+                            }
+                            else if (rel.rhs == "-init_" + dst) {
+                                update_instructions.push_back("neg " + dst);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("init_" + dst + " << ") == 0) {
+                                std::string k = rel.rhs.substr(("init_" + dst + " << ").length());
+                                update_instructions.push_back("shl " + dst + ", " + k);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("init_" + dst + " >> ") == 0) {
+                                std::string k = rel.rhs.substr(("init_" + dst + " >> ").length());
+                                update_instructions.push_back("shr " + dst + ", " + k);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("init_" + dst + " sar ") == 0) {
+                                std::string k = rel.rhs.substr(("init_" + dst + " sar ").length());
+                                update_instructions.push_back("sar " + dst + ", " + k);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("init_" + dst + " ror ") == 0) {
+                                std::string k = rel.rhs.substr(("init_" + dst + " ror ").length());
+                                update_instructions.push_back("ror " + dst + ", " + k);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("mem[") != std::string::npos) {
+                                std::string base = rel.rhs.substr(4, rel.rhs.size() - 5);
+                                if (rel.delta != 0) {
+                                    std::string sign = (rel.delta > 0) ? " + " : " - ";
+                                    update_instructions.push_back("mov " + dst + ", [" + base + sign + imm_hex(std::abs(rel.delta)) + "]");
+                                }
+                                else {
+                                    update_instructions.push_back("mov " + dst + ", [" + base + "]");
+                                }
+                                handled = true;
+                            }
+                            else if (rel.rhs == "0x0") {
+                                if (rel.delta > 0) {
+                                    update_instructions.push_back("add " + dst + ", " + imm_hex(rel.delta));
+                                }
+                                else if (rel.delta < 0) {
+                                    update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
+                                }
+                                else {
+                                    update_instructions.push_back("mov " + dst + ", 0");
+                                }
+                                handled = true;
+                            }
+                            else {
+                                if (dst != rel.rhs) {
+                                    update_instructions.push_back("mov " + dst + ", " + rel.rhs);
+                                }
+                                if (rel.delta > 0) {
+                                    update_instructions.push_back("add " + dst + ", " + imm_hex(rel.delta));
+                                }
+                                else if (rel.delta < 0) {
+                                    update_instructions.push_back("sub " + dst + ", " + imm_hex(-rel.delta));
+                                }
+                                handled = true;
+                            }
+                            if (handled) break;
+                        }
                     }
                 }
             }
         }
 
+        // Memory writes
         for (auto& kv : init_regs) {
             std::string base = Simulator::reg_name(kv.first);
             for (auto& ma : result.mem_accesses) {
@@ -170,37 +288,24 @@ public:
             }
         }
 
-
+        // Memory relations
         for (auto& rel : result.relations) {
             if (rel.valid && rel.lhs.find("mem[") == 0) {
                 std::string mem_addr = rel.lhs.substr(4, rel.lhs.size() - 5);
                 std::string src = rel.rhs;
 
-
                 if (src.find("mem[") != std::string::npos) {
-                    continue; 
+                    continue;
                 }
 
                 std::string instr;
                 if (rel.delta == 0) {
-
                     instr = "mov [" + mem_addr + "], " + src;
                     update_instructions.push_back(instr);
                 }
-                else {
-                 
-                    update_instructions.push_back("mov RAX, " + src);
-                    if (rel.delta > 0) {
-                        update_instructions.push_back("add RAX, " + imm_hex(rel.delta));
-                    }
-                    else if (rel.delta < 0) {
-                        update_instructions.push_back("sub RAX, " + imm_hex(-rel.delta));
-                    }
-                    update_instructions.push_back("mov [" + mem_addr + "], RAX");
-                }
+
             }
         }
-
 
         std::vector<std::string> instructions = initial_instructions;
         instructions.insert(instructions.end(), update_instructions.begin(), update_instructions.end());
@@ -208,7 +313,6 @@ public:
         if (instructions.empty()) {
             instructions.push_back("nop");
         }
-
 
         out.asm_code = "";
         for (auto& instr : instructions) {
@@ -219,6 +323,26 @@ public:
     }
 
 private:
+    static std::vector<std::string> get_subreg_names(const std::string& full_reg) {
+        if (full_reg == "RAX") return { "EAX", "AX", "AL" };
+        if (full_reg == "RBX") return { "EBX", "BX", "BL" };
+        if (full_reg == "RCX") return { "ECX", "CX", "CL" };
+        if (full_reg == "RDX") return { "EDX", "DX", "DL" };
+        if (full_reg == "RSI") return { "ESI", "SI", "SIL" };
+        if (full_reg == "RDI") return { "EDI", "DI", "DIL" };
+        if (full_reg == "RSP") return { "ESP", "SP", "SPL" };
+        if (full_reg == "RBP") return { "EBP", "BP", "BPL" };
+        if (full_reg == "R8") return { "R8D", "R8W", "R8B" };
+        if (full_reg == "R9") return { "R9D", "R9W", "R9B" };
+        if (full_reg == "R10") return { "R10D", "R10W", "R10B" };
+        if (full_reg == "R11") return { "R11D", "R11W", "R11B" };
+        if (full_reg == "R12") return { "R12D", "R12W", "R12B" };
+        if (full_reg == "R13") return { "R13D", "R13W", "R13B" };
+        if (full_reg == "R14") return { "R14D", "R14W", "R14B" };
+        if (full_reg == "R15") return { "R15D", "R15W", "R15B" };
+        return {};
+    }
+
     static std::string imm_hex(int64_t v) {
         char buf[32];
         snprintf(buf, sizeof(buf), "0x%llX", std::llabs(v));
