@@ -453,13 +453,13 @@ inline std::vector<Relation> find_register_register_operations(const SimulationD
 }
 
 // ---------------- Bitwise Operations ----------------
-// ?? ???? find_bitwise_operations
+
 inline std::vector<Relation> find_bitwise_operations(const SimulationData& data) {
     std::vector<Relation> out;
     size_t trials = data.initial_regs.size();
     std::unordered_set<int> changed_regs = compute_changed_bases(data);
 
-    // AND/OR/XOR ??? ????????? 64 ????
+
     auto bitwise_generic = [&](std::function<uint64_t(uint64_t, uint64_t)> op, const std::string& op_name) {
         for (int r1 : changed_regs) {
             for (int r2 : Simulator::TRACKED_REGS) {
@@ -483,23 +483,23 @@ inline std::vector<Relation> find_bitwise_operations(const SimulationData& data)
     bitwise_generic(std::bit_or<uint64_t>(), "|");
     bitwise_generic(std::bit_xor<uint64_t>(), "^");
 
-    // XOR/AND ?? ???? (??? ???? ????????? ?????????)
+
     for (int reg_id : changed_regs) {
         std::string reg_name = Simulator::reg_name(reg_id);
         uint64_t constant;
 
-        // ????? XOR ?? ????
+
         auto compute_xor_const = [&](size_t t) {
             return data.final_regs[t].at(reg_id) ^ data.initial_regs[t].at(reg_id);
             };
         if (is_stable_value(trials, compute_xor_const, constant) && constant != 0) {
-            // ????? ????? ??? ??? ????????? ????? ???? (????? EDX ?? ??? RDX)
+
             bool subreg_only = false;
             std::string subreg_name;
             uint64_t subreg_mask = 0;
             auto subregs = get_subregs_for(reg_id);
             for (const auto& sub : subregs) {
-                if (sub.mask == 0xFFFFFFFFULL) { // ???? 32 ???? ??? EDX
+                if (sub.mask == 0xFFFFFFFFULL) { 
                     auto pred_sub = [&](size_t t) {
                         uint64_t f = extract_masked(data.final_regs[t], reg_id, sub.mask);
                         uint64_t i = extract_masked(data.initial_regs[t], reg_id, sub.mask);
@@ -521,7 +521,7 @@ inline std::vector<Relation> find_bitwise_operations(const SimulationData& data)
             }
         }
 
-        // ???? AND ?? ????
+
         auto compute_and_const = [&](size_t t) {
             uint64_t f = data.final_regs[t].at(reg_id);
             uint64_t i = data.initial_regs[t].at(reg_id);
@@ -534,7 +534,7 @@ inline std::vector<Relation> find_bitwise_operations(const SimulationData& data)
                 return f == (i & constant);
                 };
             if (all_trials_match(trials, pred_and)) {
-                // ????? ?????????
+      
                 bool subreg_only = false;
                 std::string subreg_name;
                 uint64_t subreg_mask = 0;
