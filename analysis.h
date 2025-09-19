@@ -68,7 +68,7 @@ inline std::string get_memory_name(uint64_t addr, const RegMap& regs) {
 }
 
 // ---------------- Simulation ----------------
-inline SimulationData run_simulations(Simulator& sim, const std::vector<uint8_t>& code, int trials = 5) {
+inline SimulationData run_simulations(Simulator& sim, const std::vector<uint8_t>& code, int trials = 10) {
     SimulationData data;
     data.initial_regs.reserve(trials);
     data.final_regs.reserve(trials);
@@ -278,12 +278,19 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
     );
     out.insert(out.end(), pair_deltas.begin(), pair_deltas.end());
 
-    // If subregister analysis is disabled, return now.
+    // If we found anything for full-64-bit regs, return (keep original behavior).
+    if (!out.empty()) {
+        auto end_it = std::unique(out.begin(), out.end());
+        out.erase(end_it, out.end());
+        return out;
+    }
+
+    // If subregister fallback is disabled, return empty now.
     if (!allow_subregs) {
         return out;
     }
 
-    // ---------------- Subregister analysis ----------------
+    // ---------------- Fallback: try relations on smaller subregisters ----------------
     struct VReg { int base_reg; std::string name; uint64_t mask; };
     std::vector<VReg> vregs;
     for (int r : Simulator::TRACKED_REGS) {
@@ -351,7 +358,7 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
                 return static_cast<int64_t>(fin) - static_cast<int64_t>(init);
                 };
             if (is_stable_value(trials, fn, delta)) {
-                // Removed: if (delta == 0) continue; to allow mov detection
+                if (delta == 0) continue;
                 out.push_back({ vregs[i].name, "init_" + vregs[j].name, delta, true });
             }
         }
@@ -449,7 +456,7 @@ inline std::vector<Relation> find_register_register_operations(const SimulationD
 
 // ---------------- Bitwise Operations ----------------
 
-inline std::vector<Relation> find_bitwise_operations(const SimulationData& data, bool allow_subregs = false) {
+inline std::vector<Relation> find_bitwise_operations(const SimulationData& data) {
     std::vector<Relation> out;
     size_t trials = data.initial_regs.size();
     std::unordered_set<int> changed_regs = compute_changed_bases(data);
@@ -559,7 +566,14 @@ inline std::vector<Relation> find_bitwise_operations(const SimulationData& data,
         }
     }
 
-    if (!allow_subregs) return out;
+    return out;
+}
+
+
+inline std::vector<Relation> find_bitwise_operations_subregs(const SimulationData& data) {
+    std::vector<Relation> out;
+    size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
 
     struct VReg { int base_reg; std::string name; uint64_t mask; };
     std::vector<VReg> vregs;
@@ -915,18 +929,18 @@ struct AnalyzerPolicy {
 
 // ---------------- Aggregation ----------------
 inline std::vector<Relation> find_constant_relations(Simulator& sim,
-    const std::vector<uint8_t>& code, int trials = 5)
+    const std::vector<uint8_t>& code, int trials = 10)
 {
     auto data = run_simulations(sim, code, trials);
     if (!is_access_count_consistent(data)) return {};
 
     // Modular list of analyzers
     std::vector<AnalyzerPolicy> policies = {
-        {"register_deltas", [&](const SimulationData& d) { return find_register_relations(d, true); }, true},
-        {"register_register_ops", [&](const SimulationData& d) { return find_register_register_operations(d, true); }, true},
+        {"register_deltas", [&](const SimulationData& d) { return find_register_relations(d, false); }, false},
+        {"register_register_ops", [&](const SimulationData& d) { return find_register_register_operations(d, false); }, false},
         {"unary_special", [&](const SimulationData& d) { return find_unary_special(d); }},
-        {"shifts", [&](const SimulationData& d) { return find_shift_operations(d, true); }, true},
-        {"bitwise_ops", [&](const SimulationData& d) { return find_bitwise_operations(d, true); }, true},
+        {"shifts", [&](const SimulationData& d) { return find_shift_operations(d, false); }},
+        {"bitwise_ops", [&](const SimulationData& d) { return find_bitwise_operations(d); }},
         {"memory_relations", [&](const SimulationData& d) { return find_memory_relations(d); }},
         {"register_memory_ops", [&](const SimulationData& d) { return find_register_memory_operations(d); }},
     };
@@ -945,7 +959,7 @@ inline std::vector<Relation> find_constant_relations(Simulator& sim,
                     if (pname == "register_deltas") return find_register_relations(data, true);
                     if (pname == "register_register_ops") return find_register_register_operations(data, true);
                     if (pname == "shifts") return find_shift_operations(data, true);
-                    // Removed bitwise_ops subregs call since now included in main
+                    if (pname == "bitwise_ops") return find_bitwise_operations_subregs(data);
                     return {};
                     };
                 auto sub_rels = sub_analyzer(policy.name);
@@ -995,7 +1009,7 @@ inline ExecutionResult analyze_execution(Simulator& sim,
     for (const auto& m : sim.mem_accesses)
         result.mem_accesses.push_back({ m.is_write, m.addr, m.value, m.reg_src });
 
-    result.relations = find_constant_relations(sim, code, 5);
+    result.relations = find_constant_relations(sim, code, 10);
     return result;
 }
 
