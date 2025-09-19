@@ -6,6 +6,7 @@
 #include <cmath>
 #include <functional>
 #include <algorithm>
+#include <unordered_set>
 
 // ---------------- Data Structures ----------------
 struct RegisterChange {
@@ -133,7 +134,6 @@ std::vector<Relation> find_relations_generic(
         int64_t delta;
         auto fn = [&](size_t t) { return compute(t, lhs, rhs); };
         if (is_stable_value(trials, fn, delta)) {
-            if (delta == 0 && lhs == rhs) continue;
             relations.push_back(make_relation(lhs, rhs, delta));
         }
     }
@@ -198,13 +198,31 @@ inline uint64_t extract_masked(const RegMap& regs, int base_reg, uint64_t mask) 
     return it->second & mask;
 }
 
+// Helper to compute changed base registers
+inline std::unordered_set<int> compute_changed_bases(const SimulationData& data) {
+    size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs;
+    for (size_t t = 0; t < trials; ++t) {
+        for (const auto& kv : data.initial_regs[t]) {
+            int rid = kv.first;
+            auto fit = data.final_regs[t].find(rid);
+            uint64_t fv = (fit != data.final_regs[t].end()) ? fit->second : 0ULL;
+            if (fv != kv.second) {
+                changed_regs.insert(rid);
+            }
+        }
+    }
+    return changed_regs;
+}
+
 // ---------------- Register Relations ----------------
 inline std::vector<Relation> find_register_relations(const SimulationData& data, bool allow_subregs = true) {
     size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
     std::vector<Relation> out;
 
     // ---------------- 1) constants for 64-bit regs ----------------
-    for (int reg_id : Simulator::TRACKED_REGS) {
+    for (int reg_id : changed_regs) {
         uint64_t constant;
         auto compute = [&](size_t t) {
             auto it = data.final_regs[t].find(reg_id);
@@ -219,9 +237,9 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
     // ---------------- 2) self-deltas for 64-bit regs ----------------
     auto self_deltas = find_relations_generic(
         trials,
-        []() {
+        [&]() {
             std::vector<std::pair<int, int>> v;
-            for (int r : Simulator::TRACKED_REGS) v.push_back({ r, r });
+            for (int r : changed_regs) v.push_back({ r, r });
             return v;
         },
         [&](size_t t, int r1, int r2) {
@@ -230,6 +248,7 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
             return static_cast<int64_t>(fin) - static_cast<int64_t>(init);
         },
         [&](int r1, int r2, int64_t d) {
+            if (d == 0) return Relation{ "", "", 0, false }; // Invalid to skip
             std::string name = Simulator::reg_name(r1);
             return Relation{ name, "init_" + name, d, true };
         }
@@ -239,9 +258,9 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
     // ---------------- 3) pair deltas for 64-bit regs ----------------
     auto pair_deltas = find_relations_generic(
         trials,
-        []() {
+        [&]() {
             std::vector<std::pair<int, int>> v;
-            for (int r1 : Simulator::TRACKED_REGS)
+            for (int r1 : changed_regs)
                 for (int r2 : Simulator::TRACKED_REGS)
                     if (r1 != r2) v.push_back({ r1, r2 });
             return v;
@@ -254,7 +273,7 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
             return static_cast<int64_t>(fin_val) - static_cast<int64_t>(init_val);
         },
         [&](int r1, int r2, int64_t d) {
-            return Relation{ Simulator::reg_name(r1), Simulator::reg_name(r2), d, true };
+            return Relation{ Simulator::reg_name(r1), "init_" + Simulator::reg_name(r2), d, true };
         }
     );
     out.insert(out.end(), pair_deltas.begin(), pair_deltas.end());
@@ -274,7 +293,7 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
     // ---------------- Fallback: try relations on smaller subregisters ----------------
     struct VReg { int base_reg; std::string name; uint64_t mask; };
     std::vector<VReg> vregs;
-    for (int r : Simulator::TRACKED_REGS) {
+    for (int r : changed_regs) {
         auto subs = get_subregs_for(r);
         for (auto& s : subs) vregs.push_back({ s.base_reg, s.name, s.mask });
     }
@@ -283,8 +302,25 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
 
     size_t N = vregs.size();
 
-    // constants for subregs
+    // Compute changed subregs
+    std::vector<size_t> changed_sub_indices;
     for (size_t i = 0; i < N; ++i) {
+        int64_t sub_delta;
+        auto fn_sub = [&](size_t t) {
+            uint64_t ff = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+            uint64_t ii = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+            return static_cast<int64_t>(ff - ii);
+            };
+        if (!is_stable_value(trials, fn_sub, sub_delta) || sub_delta != 0) {
+            changed_sub_indices.push_back(i);
+        }
+    }
+
+    if (changed_sub_indices.empty()) return out;
+
+    // constants for subregs
+    for (size_t ci : changed_sub_indices) {
+        size_t i = ci;
         uint64_t constant;
         auto compute = [&](size_t t) {
             return extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
@@ -295,7 +331,8 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
     }
 
     // self deltas for subregs: final(sub_i) - init(sub_i)
-    for (size_t i = 0; i < N; ++i) {
+    for (size_t ci : changed_sub_indices) {
+        size_t i = ci;
         int64_t delta;
         auto fn = [&](size_t t) {
             uint64_t fin = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
@@ -309,7 +346,8 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
     }
 
     // pair deltas across subregs: final(sub_i) - init(sub_j)
-    for (size_t i = 0; i < N; ++i) {
+    for (size_t ci : changed_sub_indices) {
+        size_t i = ci;
         for (size_t j = 0; j < N; ++j) {
             if (i == j) continue;
             int64_t delta;
@@ -319,136 +357,295 @@ inline std::vector<Relation> find_register_relations(const SimulationData& data,
                 return static_cast<int64_t>(fin) - static_cast<int64_t>(init);
                 };
             if (is_stable_value(trials, fn, delta)) {
-                out.push_back({ vregs[i].name, vregs[j].name, delta, true });
+                if (delta == 0) continue;
+                out.push_back({ vregs[i].name, "init_" + vregs[j].name, delta, true });
             }
         }
     }
 
-    auto end_it = std::unique(out.begin(), out.end());
-    out.erase(end_it, out.end());
     return out;
 }
 
-// ---------------- Register-Register Operations ----------------
+// ---------------- Register-Register Operations (Add/Sub/Mul) ----------------
 inline std::vector<Relation> find_register_register_operations(const SimulationData& data, bool allow_subregs = true) {
     std::vector<Relation> out;
     size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
 
-    if (!allow_subregs) {
-        // Full 64-bit registers
-        for (int r1 : Simulator::TRACKED_REGS) {
-            std::string reg1_name = Simulator::reg_name(r1);
+    // Generic for add/sub between regs
+    auto arith_generic = [&](std::function<uint64_t(uint64_t, uint64_t)> op, const std::string& op_name) {
+        for (int r1 : changed_regs) {
             for (int r2 : Simulator::TRACKED_REGS) {
                 if (r1 == r2) continue;
-                std::string reg2_name = Simulator::reg_name(r2);
-
-                // Check for ADD r1, r2: final_r1 == init_r1 + init_r2
-                auto add_pred = [&](size_t t) -> bool {
+                auto pred = [&](size_t t) {
                     uint64_t f = data.final_regs[t].at(r1);
                     uint64_t i1 = data.initial_regs[t].at(r1);
                     uint64_t i2 = data.initial_regs[t].at(r2);
-                    return f == i1 + i2;
+                    return f == op(i1, i2);
                     };
-                if (all_trials_match(trials, add_pred)) {
-                    std::string rhs = "init_" + reg1_name + " + " + reg2_name;
-                    out.push_back({ reg1_name, rhs, 0, true });
-                    continue;
+                if (all_trials_match(trials, pred)) {
+                    std::string lhs = Simulator::reg_name(r1);
+                    std::string rhs = "init_" + Simulator::reg_name(r1) + " " + op_name + " init_" + Simulator::reg_name(r2);
+                    out.push_back({ lhs, rhs, 0, true });
                 }
+            }
+        }
+        };
 
-                // Check for SUB r1, r2: final_r1 == init_r1 - init_r2
-                auto sub_pred = [&](size_t t) -> bool {
+    arith_generic([](uint64_t a, uint64_t b) { return a + b; }, "+");
+    arith_generic([](uint64_t a, uint64_t b) { return a - b; }, "-");
+    // Add mul if needed: arith_generic([](uint64_t a, uint64_t b) { return a * b; }, "*");
+
+    if (!allow_subregs) return out;
+
+    // Subregs version (similar logic with extract_masked)
+    struct VReg { int base_reg; std::string name; uint64_t mask; };
+    std::vector<VReg> vregs;
+    for (int r : changed_regs) {
+        auto subs = get_subregs_for(r);
+        for (auto& s : subs) vregs.push_back({ s.base_reg, s.name, s.mask });
+    }
+    size_t N = vregs.size();
+
+    // Compute changed subregs
+    std::vector<size_t> changed_sub_indices;
+    for (size_t i = 0; i < N; ++i) {
+        int64_t sub_delta;
+        auto fn_sub = [&](size_t t) {
+            uint64_t ff = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+            uint64_t ii = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+            return static_cast<int64_t>(ff - ii);
+            };
+        if (!is_stable_value(trials, fn_sub, sub_delta) || sub_delta != 0) {
+            changed_sub_indices.push_back(i);
+        }
+    }
+
+    if (changed_sub_indices.empty()) return out;
+
+    for (size_t ci : changed_sub_indices) {
+        size_t i = ci;
+        for (size_t j = 0; j < N; ++j) {
+            if (i == j) continue;
+            auto pred_add = [&](size_t t) {
+                uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, vregs[j].mask);
+                return f == (i1 + i2) && f <= vregs[i].mask;  // Overflow check approximate
+                };
+            if (all_trials_match(trials, pred_add)) {
+                out.push_back({ vregs[i].name, "init_" + vregs[i].name + " + init_" + vregs[j].name, 0, true });
+            }
+            // Similar for sub
+            auto pred_sub = [&](size_t t) {
+                uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, vregs[j].mask);
+                return f == (i1 - i2) && f <= vregs[i].mask;
+                };
+            if (all_trials_match(trials, pred_sub)) {
+                out.push_back({ vregs[i].name, "init_" + vregs[i].name + " - init_" + vregs[j].name, 0, true });
+            }
+        }
+    }
+
+    return out;
+}
+
+// ---------------- Bitwise Operations ----------------
+// ?? ???? find_bitwise_operations
+inline std::vector<Relation> find_bitwise_operations(const SimulationData& data) {
+    std::vector<Relation> out;
+    size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
+
+    // AND/OR/XOR ??? ????????? 64 ????
+    auto bitwise_generic = [&](std::function<uint64_t(uint64_t, uint64_t)> op, const std::string& op_name) {
+        for (int r1 : changed_regs) {
+            for (int r2 : Simulator::TRACKED_REGS) {
+                if (r1 == r2) continue;
+                auto pred = [&](size_t t) {
                     uint64_t f = data.final_regs[t].at(r1);
                     uint64_t i1 = data.initial_regs[t].at(r1);
                     uint64_t i2 = data.initial_regs[t].at(r2);
-                    return f == i1 - i2;
+                    return f == op(i1, i2);
                     };
-                if (all_trials_match(trials, sub_pred)) {
-                    std::string rhs = "init_" + reg1_name + " - " + reg2_name;
-                    out.push_back({ reg1_name, rhs, 0, true });
-                    continue;
+                if (all_trials_match(trials, pred)) {
+                    std::string lhs = Simulator::reg_name(r1);
+                    std::string rhs = "init_" + Simulator::reg_name(r1) + " " + op_name + " init_" + Simulator::reg_name(r2);
+                    out.push_back({ lhs, rhs, 0, true });
                 }
+            }
+        }
+        };
 
-                // Check for XOR r1, r2: final_r1 == init_r1 ^ init_r2
-                auto xor_pred = [&](size_t t) -> bool {
-                    uint64_t f = data.final_regs[t].at(r1);
-                    uint64_t i1 = data.initial_regs[t].at(r1);
-                    uint64_t i2 = data.initial_regs[t].at(r2);
-                    return f == (i1 ^ i2);
-                    };
-                if (all_trials_match(trials, xor_pred)) {
-                    std::string rhs = "init_" + reg1_name + " ^ " + reg2_name;
-                    out.push_back({ reg1_name, rhs, 0, true });
-                    continue;
+    bitwise_generic(std::bit_and<uint64_t>(), "&");
+    bitwise_generic(std::bit_or<uint64_t>(), "|");
+    bitwise_generic(std::bit_xor<uint64_t>(), "^");
+
+    // XOR/AND ?? ???? (??? ???? ????????? ?????????)
+    for (int reg_id : changed_regs) {
+        std::string reg_name = Simulator::reg_name(reg_id);
+        uint64_t constant;
+
+        // ????? XOR ?? ????
+        auto compute_xor_const = [&](size_t t) {
+            return data.final_regs[t].at(reg_id) ^ data.initial_regs[t].at(reg_id);
+            };
+        if (is_stable_value(trials, compute_xor_const, constant) && constant != 0) {
+            // ????? ????? ??? ??? ????????? ????? ???? (????? EDX ?? ??? RDX)
+            bool subreg_only = false;
+            std::string subreg_name;
+            uint64_t subreg_mask = 0;
+            auto subregs = get_subregs_for(reg_id);
+            for (const auto& sub : subregs) {
+                if (sub.mask == 0xFFFFFFFFULL) { // ???? 32 ???? ??? EDX
+                    auto pred_sub = [&](size_t t) {
+                        uint64_t f = extract_masked(data.final_regs[t], reg_id, sub.mask);
+                        uint64_t i = extract_masked(data.initial_regs[t], reg_id, sub.mask);
+                        return f == (i ^ (constant & sub.mask));
+                        };
+                    if (all_trials_match(trials, pred_sub)) {
+                        subreg_only = true;
+                        subreg_name = sub.name;
+                        subreg_mask = sub.mask;
+                        break;
+                    }
+                }
+            }
+            if (subreg_only) {
+                out.push_back({ subreg_name, "init_" + subreg_name + " ^ 0x" + to_hex(constant & subreg_mask), 0, true });
+            }
+            else {
+                out.push_back({ reg_name, "init_" + reg_name + " ^ 0x" + to_hex(constant), 0, true });
+            }
+        }
+
+        // ???? AND ?? ????
+        auto compute_and_const = [&](size_t t) {
+            uint64_t f = data.final_regs[t].at(reg_id);
+            uint64_t i = data.initial_regs[t].at(reg_id);
+            return f | (~i);
+            };
+        if (is_stable_value(trials, compute_and_const, constant) && constant != 0xFFFFFFFFFFFFFFFFULL) {
+            auto pred_and = [&](size_t t) {
+                uint64_t f = data.final_regs[t].at(reg_id);
+                uint64_t i = data.initial_regs[t].at(reg_id);
+                return f == (i & constant);
+                };
+            if (all_trials_match(trials, pred_and)) {
+                // ????? ?????????
+                bool subreg_only = false;
+                std::string subreg_name;
+                uint64_t subreg_mask = 0;
+                auto subregs = get_subregs_for(reg_id);
+                for (const auto& sub : subregs) {
+                    if (sub.mask == 0xFFFFFFFFULL) {
+                        auto pred_sub = [&](size_t t) {
+                            uint64_t f = extract_masked(data.final_regs[t], reg_id, sub.mask);
+                            uint64_t i = extract_masked(data.initial_regs[t], reg_id, sub.mask);
+                            return f == (i & (constant & sub.mask));
+                            };
+                        if (all_trials_match(trials, pred_sub)) {
+                            subreg_only = true;
+                            subreg_name = sub.name;
+                            subreg_mask = sub.mask;
+                            break;
+                        }
+                    }
+                }
+                if (subreg_only) {
+                    out.push_back({ subreg_name, "init_" + subreg_name + " & 0x" + to_hex(constant & subreg_mask), 0, true });
+                }
+                else {
+                    out.push_back({ reg_name, "init_" + reg_name + " & 0x" + to_hex(constant), 0, true });
                 }
             }
         }
     }
-    else {
-        // Subregister mode
-        struct VReg { int base_reg; std::string name; uint64_t mask; };
-        std::vector<VReg> vregs;
-        for (int r : Simulator::TRACKED_REGS) {
-            auto subs = get_subregs_for(r);
-            for (auto& s : subs) vregs.push_back({ s.base_reg, s.name, s.mask });
-        }
-        size_t N = vregs.size();
-        const uint64_t M32 = 0xFFFFFFFFULL;  // For masking results
 
-        for (size_t i = 0; i < N; ++i) {
-            std::string name1 = vregs[i].name;
-            uint64_t mask1 = vregs[i].mask;
+    return out;
+}
+
+
+inline std::vector<Relation> find_bitwise_operations_subregs(const SimulationData& data) {
+    std::vector<Relation> out;
+    size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
+
+    struct VReg { int base_reg; std::string name; uint64_t mask; };
+    std::vector<VReg> vregs;
+    for (int r : changed_regs) {
+        auto subs = get_subregs_for(r);
+        for (auto& s : subs) vregs.push_back({ s.base_reg, s.name, s.mask });
+    }
+    size_t N = vregs.size();
+
+    std::vector<size_t> changed_sub_indices;
+    for (size_t i = 0; i < N; ++i) {
+        int64_t sub_delta;
+        auto fn_sub = [&](size_t t) {
+            uint64_t ff = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+            uint64_t ii = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+            return static_cast<int64_t>(ff - ii);
+            };
+        if (!is_stable_value(trials, fn_sub, sub_delta) || sub_delta != 0) {
+            changed_sub_indices.push_back(i);
+        }
+    }
+
+    if (changed_sub_indices.empty()) return out;
+
+    auto bitwise_generic_sub = [&](std::function<uint64_t(uint64_t, uint64_t)> op, const std::string& op_name) {
+        for (size_t ci : changed_sub_indices) {
+            size_t i = ci;
             for (size_t j = 0; j < N; ++j) {
                 if (i == j) continue;
-                std::string name2 = vregs[j].name;
-                uint64_t mask2 = vregs[j].mask;
-
-                // Check for ADD: final_sub1 == (init_sub1 + init_sub2) & mask1
-                auto add_pred = [&](size_t t) -> bool {
-                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, mask1);
-                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, mask1);
-                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, mask2);
-                    uint64_t sum = i1 + i2;
-                    return f == (sum & mask1);
+                auto pred = [&](size_t t) {
+                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, vregs[j].mask);
+                    return f == op(i1, i2);
                     };
-                if (all_trials_match(trials, add_pred)) {
-                    std::string rhs = "init_" + name1 + " + " + name2;
-                    out.push_back({ name1, rhs, 0, true });
-                    continue;
+                if (all_trials_match(trials, pred)) {
+                    out.push_back({ vregs[i].name, "init_" + vregs[i].name + " " + op_name + " init_" + vregs[j].name, 0, true });
                 }
+            }
+        }
+        };
 
-                // Check for SUB: final_sub1 == (init_sub1 - init_sub2) & mask1
-                auto sub_pred = [&](size_t t) -> bool {
-                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, mask1);
-                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, mask1);
-                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, mask2);
-                    uint64_t diff = i1 - i2;
-                    return f == (diff & mask1);
-                    };
-                if (all_trials_match(trials, sub_pred)) {
-                    std::string rhs = "init_" + name1 + " - " + name2;
-                    out.push_back({ name1, rhs, 0, true });
-                    continue;
-                }
+    bitwise_generic_sub(std::bit_and<uint64_t>(), "&");
+    bitwise_generic_sub(std::bit_or<uint64_t>(), "|");
+    bitwise_generic_sub(std::bit_xor<uint64_t>(), "^");
 
-                // Check for XOR: final_sub1 == (init_sub1 ^ init_sub2) & mask1
-                auto xor_pred = [&](size_t t) -> bool {
-                    uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, mask1);
-                    uint64_t i1 = extract_masked(data.initial_regs[t], vregs[i].base_reg, mask1);
-                    uint64_t i2 = extract_masked(data.initial_regs[t], vregs[j].base_reg, mask2);
-                    return f == ((i1 ^ i2) & mask1);
-                    };
-                if (all_trials_match(trials, xor_pred)) {
-                    std::string rhs = "init_" + name1 + " ^ " + name2;
-                    out.push_back({ name1, rhs, 0, true });
-                    continue;
-                }
+
+    for (size_t ci : changed_sub_indices) {
+        size_t i = ci;
+        uint64_t constant;
+        auto compute_xor = [&](size_t t) {
+            return extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask) ^
+                extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+            };
+        if (is_stable_value(trials, compute_xor, constant) && constant != 0) {
+            out.push_back({ vregs[i].name, "init_" + vregs[i].name + " ^ 0x" + to_hex(constant & vregs[i].mask), 0, true });
+        }
+        auto compute_and = [&](size_t t) {
+            uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+            uint64_t in = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+            return f | (~in);
+            };
+        if (is_stable_value(trials, compute_and, constant) && constant != vregs[i].mask) {
+            auto pred_and = [&](size_t t) {
+                uint64_t f = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t in = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+                return f == (in & constant);
+                };
+            if (all_trials_match(trials, pred_and)) {
+                out.push_back({ vregs[i].name, "init_" + vregs[i].name + " & 0x" + to_hex(constant & vregs[i].mask), 0, true });
             }
         }
     }
 
-    // remove duplicates
-    auto end_it = std::unique(out.begin(), out.end());
-    out.erase(end_it, out.end());
     return out;
 }
 
@@ -456,8 +653,9 @@ inline std::vector<Relation> find_register_register_operations(const SimulationD
 inline std::vector<Relation> find_unary_special(const SimulationData& data) {
     std::vector<Relation> out;
     size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
 
-    for (int reg_id : Simulator::TRACKED_REGS) {
+    for (int reg_id : changed_regs) {
         std::string reg_name = Simulator::reg_name(reg_id);
 
         auto pred_not = [&](size_t t) {
@@ -484,11 +682,13 @@ inline std::vector<Relation> find_unary_special(const SimulationData& data) {
 }
 
 // ---------------- Shift Operations ----------------
-inline std::vector<Relation> find_shift_operations(const SimulationData& data) {
+inline std::vector<Relation> find_shift_operations(const SimulationData& data, bool allow_subregs = true) {
     std::vector<Relation> out;
     size_t trials = data.initial_regs.size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
 
-    for (int reg_id : Simulator::TRACKED_REGS) {
+    // Fixed shifts for 64-bit
+    for (int reg_id : changed_regs) {
         std::string reg_name = Simulator::reg_name(reg_id);
 
         for (int k = 1; k < 64; ++k) {
@@ -533,6 +733,85 @@ inline std::vector<Relation> find_shift_operations(const SimulationData& data) {
             }
         }
     }
+
+    // Variable rotate by CL for 64-bit
+    for (int dest : changed_regs) {
+        std::string reg_name = Simulator::reg_name(dest);
+
+        auto pred_ror_cl = [&](size_t t) {
+            uint64_t f = data.final_regs[t].at(dest);
+            uint64_t i = data.initial_regs[t].at(dest);
+            uint64_t clv = data.initial_regs[t].at(UC_X86_REG_RCX) & 0xFFULL;
+            clv &= 63ULL;  // mod 64 for 64-bit
+            if (clv == 0) return true;
+            uint64_t rotated = (i >> clv) | (i << (64ULL - clv));
+            return f == rotated;
+            };
+        if (all_trials_match(trials, pred_ror_cl)) {
+            out.push_back({ reg_name, "ror(init_" + reg_name + ", CL)", 0, true });
+        }
+
+        auto pred_rol_cl = [&](size_t t) {
+            uint64_t f = data.final_regs[t].at(dest);
+            uint64_t i = data.initial_regs[t].at(dest);
+            uint64_t clv = data.initial_regs[t].at(UC_X86_REG_RCX) & 0xFFULL;
+            clv &= 63ULL;
+            if (clv == 0) return true;
+            uint64_t rotated = (i << clv) | (i >> (64ULL - clv));
+            return f == rotated;
+            };
+        if (all_trials_match(trials, pred_rol_cl)) {
+            out.push_back({ reg_name, "rol(init_" + reg_name + ", CL)", 0, true });
+        }
+    }
+
+    if (allow_subregs) {
+        // Subregs version for ROR (improved)
+        struct VReg { int base_reg; std::string name; uint64_t mask; uint64_t bits; };  // bits for shift width
+        std::vector<VReg> vregs;
+        for (int r : changed_regs) {
+            auto subs = get_subregs_for(r);
+            for (auto& s : subs) {
+                uint64_t bits = (s.mask == 0xFFULL) ? 8 : (s.mask == 0xFFFFULL) ? 16 : 32;
+                vregs.push_back({ s.base_reg, s.name, s.mask, bits });
+            }
+        }
+
+        // Compute changed subregs
+        size_t N_sub = vregs.size();
+        std::vector<size_t> changed_sub_indices;
+        for (size_t i = 0; i < N_sub; ++i) {
+            int64_t sub_delta;
+            auto fn_sub = [&](size_t t) {
+                uint64_t ff = extract_masked(data.final_regs[t], vregs[i].base_reg, vregs[i].mask);
+                uint64_t ii = extract_masked(data.initial_regs[t], vregs[i].base_reg, vregs[i].mask);
+                return static_cast<int64_t>(ff - ii);
+                };
+            if (!is_stable_value(trials, fn_sub, sub_delta) || sub_delta != 0) {
+                changed_sub_indices.push_back(i);
+            }
+        }
+
+        if (!changed_sub_indices.empty()) {
+            for (size_t ci : changed_sub_indices) {
+                size_t i = ci;
+                auto& vreg = vregs[i];
+                for (int k = 1; k < static_cast<int>(vreg.bits); ++k) {
+                    auto pred_ror = [&](size_t t) {
+                        uint64_t f = extract_masked(data.final_regs[t], vreg.base_reg, vreg.mask);
+                        uint64_t in = extract_masked(data.initial_regs[t], vreg.base_reg, vreg.mask);
+                        uint64_t shifted = ((in >> k) | (in << (vreg.bits - k))) & vreg.mask;
+                        return f == shifted;
+                        };
+                    if (all_trials_match(trials, pred_ror)) {
+                        out.push_back({ vreg.name, "init_" + vreg.name + " ror " + std::to_string(k), 0, true });
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     return out;
 }
 
@@ -598,8 +877,9 @@ inline std::vector<Relation> find_register_memory_operations(const SimulationDat
     std::vector<Relation> out;
     size_t trials = data.initial_regs.size();
     size_t num_accesses = data.memory_accesses.empty() ? 0 : data.memory_accesses[0].size();
+    std::unordered_set<int> changed_regs = compute_changed_bases(data);
 
-    for (int reg_id : Simulator::TRACKED_REGS) {
+    for (int reg_id : changed_regs) {
         std::string reg_name = Simulator::reg_name(reg_id);
 
         for (size_t idx = 0; idx < num_accesses; ++idx) {
@@ -637,6 +917,13 @@ inline std::vector<Relation> find_register_memory_operations(const SimulationDat
     return out;
 }
 
+// ---------------- Analyzer Policy for Modularity ----------------
+struct AnalyzerPolicy {
+    std::string name;
+    std::function<std::vector<Relation>(const SimulationData&)> analyzer_func;
+    bool allow_subregs = true;
+};
+
 // ---------------- Aggregation ----------------
 inline std::vector<Relation> find_constant_relations(Simulator& sim,
     const std::vector<uint8_t>& code, int trials = 5)
@@ -644,32 +931,38 @@ inline std::vector<Relation> find_constant_relations(Simulator& sim,
     auto data = run_simulations(sim, code, trials);
     if (!is_access_count_consistent(data)) return {};
 
+    // Modular list of analyzers
+    std::vector<AnalyzerPolicy> policies = {
+        {"register_deltas", [&](const SimulationData& d) { return find_register_relations(d, false); }, false},
+        {"register_register_ops", [&](const SimulationData& d) { return find_register_register_operations(d, false); }, false},
+        {"unary_special", [&](const SimulationData& d) { return find_unary_special(d); }},
+        {"shifts", [&](const SimulationData& d) { return find_shift_operations(d, false); }},
+        {"bitwise_ops", [&](const SimulationData& d) { return find_bitwise_operations(d); }},
+        {"memory_relations", [&](const SimulationData& d) { return find_memory_relations(d); }},
+        {"register_memory_ops", [&](const SimulationData& d) { return find_register_memory_operations(d); }},
+    };
+
     std::vector<Relation> relations;
+    for (const auto& policy : policies) {
+        auto rels = policy.analyzer_func(data);
+        relations.insert(relations.end(), rels.begin(), rels.end());
+    }
 
-    auto regs = find_register_relations(data, /*allow_subregs=*/false);
-    relations.insert(relations.end(), regs.begin(), regs.end());
-
-    auto regrreg_full = find_register_register_operations(data, /*allow_subregs=*/false);
-    relations.insert(relations.end(), regrreg_full.begin(), regrreg_full.end());
-
-    auto unary_special = find_unary_special(data);
-    relations.insert(relations.end(), unary_special.begin(), unary_special.end());
-
-    auto shifts = find_shift_operations(data);
-    relations.insert(relations.end(), shifts.begin(), shifts.end());
-
-    auto mems = find_memory_relations(data);
-    relations.insert(relations.end(), mems.begin(), mems.end());
-
-    auto regmem = find_register_memory_operations(data);
-    relations.insert(relations.end(), regmem.begin(), regmem.end());
-
+    // Fallback to subregs if nothing found
     if (relations.empty()) {
-        auto regs_sub = find_register_relations(data, /*allow_subregs=*/true);
-        relations.insert(relations.end(), regs_sub.begin(), regs_sub.end());
-
-        auto regrreg_sub = find_register_register_operations(data, /*allow_subregs=*/true);
-        relations.insert(relations.end(), regrreg_sub.begin(), regrreg_sub.end());
+        for (const auto& policy : policies) {
+            if (policy.allow_subregs) {
+                auto sub_analyzer = [&](const std::string& pname) -> std::vector<Relation> {
+                    if (pname == "register_deltas") return find_register_relations(data, true);
+                    if (pname == "register_register_ops") return find_register_register_operations(data, true);
+                    if (pname == "shifts") return find_shift_operations(data, true);
+                    if (pname == "bitwise_ops") return find_bitwise_operations_subregs(data);
+                    return {};
+                    };
+                auto sub_rels = sub_analyzer(policy.name);
+                relations.insert(relations.end(), sub_rels.begin(), sub_rels.end());
+            }
+        }
     }
 
     auto relation_cmp = [](const Relation& a, const Relation& b) {
@@ -688,6 +981,7 @@ inline std::vector<Relation> find_constant_relations(Simulator& sim,
 
     relations.erase(std::remove_if(relations.begin(), relations.end(),
         [](const Relation& r) {
+            if (!r.valid) return true;
             if (r.lhs == r.rhs && r.delta == 0) return true;
             return false;
         }), relations.end());

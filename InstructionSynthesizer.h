@@ -1,12 +1,12 @@
 #pragma once
 #include "simulator.h"
 #include "analysis.h"
-#include "deps/XEDParse.h"
 #include <string>
 #include <vector>
 #include <iostream>
 #include <cstring>
 #include <algorithm>  
+#include <XEDParse.h>
 
 struct SynthesizedInstr {
     std::string asm_code;
@@ -51,6 +51,7 @@ public:
                         if (rel.rhs.find("init_" + sub_dst + " - ") == 0) {
                             size_t pos = ("init_" + sub_dst + " - ").length();
                             std::string src = rel.rhs.substr(pos);
+                            if (src.find("init_") == 0) src = src.substr(5); // Remove init_
                             instr = "sub " + sub_dst + ", " + src;
                             update_instructions.push_back(instr);
                             sub_handled = true;
@@ -59,6 +60,7 @@ public:
                         else if (rel.rhs.find("init_" + sub_dst + " + ") == 0) {
                             size_t pos = ("init_" + sub_dst + " + ").length();
                             std::string src = rel.rhs.substr(pos);
+                            if (src.find("init_") == 0) src = src.substr(5);
                             instr = "add " + sub_dst + ", " + src;
                             update_instructions.push_back(instr);
                             sub_handled = true;
@@ -67,7 +69,29 @@ public:
                         else if (rel.rhs.find("init_" + sub_dst + " ^ ") == 0) {
                             size_t pos = ("init_" + sub_dst + " ^ ").length();
                             std::string src = rel.rhs.substr(pos);
+                            if (src.find("init_") == 0) src = src.substr(5);
+                            else if (src.find("0x") == 0) src = imm_hex(std::stoull(src, nullptr, 16));
                             instr = "xor " + sub_dst + ", " + src;
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs.find("init_" + sub_dst + " & ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " & ").length();
+                            std::string src = rel.rhs.substr(pos);
+                            if (src.find("init_") == 0) src = src.substr(5);
+                            else if (src.find("0x") == 0) src = imm_hex(std::stoull(src, nullptr, 16));
+                            instr = "and " + sub_dst + ", " + src;
+                            update_instructions.push_back(instr);
+                            sub_handled = true;
+                            break;
+                        }
+                        else if (rel.rhs.find("init_" + sub_dst + " | ") == 0) {
+                            size_t pos = ("init_" + sub_dst + " | ").length();
+                            std::string src = rel.rhs.substr(pos);
+                            if (src.find("init_") == 0) src = src.substr(5);
+                            else if (src.find("0x") == 0) src = imm_hex(std::stoull(src, nullptr, 16));
+                            instr = "or " + sub_dst + ", " + src;
                             update_instructions.push_back(instr);
                             sub_handled = true;
                             break;
@@ -101,28 +125,52 @@ public:
                         else if (rel.rhs.find("init_" + sub_dst + " << ") == 0) {
                             size_t pos = ("init_" + sub_dst + " << ").length();
                             std::string k = rel.rhs.substr(pos);
-                            update_instructions.push_back("shl " + sub_dst + ", " + k);
+                            try {
+                                int shift_val = std::stoi(k);
+                                update_instructions.push_back("shl " + sub_dst + ", " + imm_hex(shift_val));
+                            }
+                            catch (...) {
+                                update_instructions.push_back("shl " + sub_dst + ", " + k);
+                            }
                             sub_handled = true;
                             break;
                         }
                         else if (rel.rhs.find("init_" + sub_dst + " >> ") == 0) {
                             size_t pos = ("init_" + sub_dst + " >> ").length();
                             std::string k = rel.rhs.substr(pos);
-                            update_instructions.push_back("shr " + sub_dst + ", " + k);
+                            try {
+                                int shift_val = std::stoi(k);
+                                update_instructions.push_back("shr " + sub_dst + ", " + imm_hex(shift_val));
+                            }
+                            catch (...) {
+                                update_instructions.push_back("shr " + sub_dst + ", " + k);
+                            }
                             sub_handled = true;
                             break;
                         }
                         else if (rel.rhs.find("init_" + sub_dst + " sar ") == 0) {
                             size_t pos = ("init_" + sub_dst + " sar ").length();
                             std::string k = rel.rhs.substr(pos);
-                            update_instructions.push_back("sar " + sub_dst + ", " + k);
+                            try {
+                                int shift_val = std::stoi(k);
+                                update_instructions.push_back("sar " + sub_dst + ", " + imm_hex(shift_val));
+                            }
+                            catch (...) {
+                                update_instructions.push_back("sar " + sub_dst + ", " + k);
+                            }
                             sub_handled = true;
                             break;
                         }
                         else if (rel.rhs.find("init_" + sub_dst + " ror ") == 0) {
                             size_t pos = ("init_" + sub_dst + " ror ").length();
                             std::string k = rel.rhs.substr(pos);
-                            update_instructions.push_back("ror " + sub_dst + ", " + k);
+                            try {
+                                int shift_val = std::stoi(k);
+                                update_instructions.push_back("ror " + sub_dst + ", " + imm_hex(shift_val));
+                            }
+                            catch (...) {
+                                update_instructions.push_back("ror " + sub_dst + ", " + k);
+                            }
                             sub_handled = true;
                             break;
                         }
@@ -140,7 +188,9 @@ public:
                             break;
                         }
                         else {
-                            instr = "mov " + sub_dst + ", " + rel.rhs;
+                            std::string src = rel.rhs;
+                            if (src.find("init_") == 0) src = src.substr(5);
+                            instr = "mov " + sub_dst + ", " + src;
                             update_instructions.push_back(instr);
                             if (rel.delta != 0) {
                                 if (rel.delta > 0) {
@@ -165,7 +215,8 @@ public:
                         if (rel.lhs == dst && rel.valid) {
                             if (rel.rhs.find("init_" + dst + " - ") == 0) {
                                 std::string op_part = rel.rhs.substr(("init_" + dst + " - ").length());
-                                if (op_part.find("mem[") == 0) {
+                                if (op_part.find("init_") == 0) op_part = op_part.substr(5);
+                                else if (op_part.find("mem[") == 0) {
                                     std::string addr = op_part.substr(4, op_part.size() - 5);
                                     update_instructions.push_back("sub " + dst + ", [" + addr + "]");
                                     handled = true;
@@ -177,7 +228,8 @@ public:
                             }
                             else if (rel.rhs.find("init_" + dst + " + ") == 0) {
                                 std::string op_part = rel.rhs.substr(("init_" + dst + " + ").length());
-                                if (op_part.find("mem[") == 0) {
+                                if (op_part.find("init_") == 0) op_part = op_part.substr(5);
+                                else if (op_part.find("mem[") == 0) {
                                     std::string addr = op_part.substr(4, op_part.size() - 5);
                                     update_instructions.push_back("add " + dst + ", [" + addr + "]");
                                     handled = true;
@@ -189,7 +241,23 @@ public:
                             }
                             else if (rel.rhs.find("init_" + dst + " ^ ") == 0) {
                                 std::string op_part = rel.rhs.substr(("init_" + dst + " ^ ").length());
+                                if (op_part.find("init_") == 0) op_part = op_part.substr(5);
+                                else if (op_part.find("0x") == 0) op_part = imm_hex(std::stoull(op_part, nullptr, 16));
                                 update_instructions.push_back("xor " + dst + ", " + op_part);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("init_" + dst + " & ") == 0) {
+                                std::string op_part = rel.rhs.substr(("init_" + dst + " & ").length());
+                                if (op_part.find("init_") == 0) op_part = op_part.substr(5);
+                                else if (op_part.find("0x") == 0) op_part = imm_hex(std::stoull(op_part, nullptr, 16));
+                                update_instructions.push_back("and " + dst + ", " + op_part);
+                                handled = true;
+                            }
+                            else if (rel.rhs.find("init_" + dst + " | ") == 0) {
+                                std::string op_part = rel.rhs.substr(("init_" + dst + " | ").length());
+                                if (op_part.find("init_") == 0) op_part = op_part.substr(5);
+                                else if (op_part.find("0x") == 0) op_part = imm_hex(std::stoull(op_part, nullptr, 16));
+                                update_instructions.push_back("or " + dst + ", " + op_part);
                                 handled = true;
                             }
                             else if (rel.rhs == "init_" + dst) {
@@ -217,22 +285,46 @@ public:
                             }
                             else if (rel.rhs.find("init_" + dst + " << ") == 0) {
                                 std::string k = rel.rhs.substr(("init_" + dst + " << ").length());
-                                update_instructions.push_back("shl " + dst + ", " + k);
+                                try {
+                                    int shift_val = std::stoi(k);
+                                    update_instructions.push_back("shl " + dst + ", " + imm_hex(shift_val));
+                                }
+                                catch (...) {
+                                    update_instructions.push_back("shl " + dst + ", " + k);
+                                }
                                 handled = true;
                             }
                             else if (rel.rhs.find("init_" + dst + " >> ") == 0) {
                                 std::string k = rel.rhs.substr(("init_" + dst + " >> ").length());
-                                update_instructions.push_back("shr " + dst + ", " + k);
+                                try {
+                                    int shift_val = std::stoi(k);
+                                    update_instructions.push_back("shr " + dst + ", " + imm_hex(shift_val));
+                                }
+                                catch (...) {
+                                    update_instructions.push_back("shr " + dst + ", " + k);
+                                }
                                 handled = true;
                             }
                             else if (rel.rhs.find("init_" + dst + " sar ") == 0) {
                                 std::string k = rel.rhs.substr(("init_" + dst + " sar ").length());
-                                update_instructions.push_back("sar " + dst + ", " + k);
+                                try {
+                                    int shift_val = std::stoi(k);
+                                    update_instructions.push_back("sar " + dst + ", " + imm_hex(shift_val));
+                                }
+                                catch (...) {
+                                    update_instructions.push_back("sar " + dst + ", " + k);
+                                }
                                 handled = true;
                             }
                             else if (rel.rhs.find("init_" + dst + " ror ") == 0) {
                                 std::string k = rel.rhs.substr(("init_" + dst + " ror ").length());
-                                update_instructions.push_back("ror " + dst + ", " + k);
+                                try {
+                                    int shift_val = std::stoi(k);
+                                    update_instructions.push_back("ror " + dst + ", " + imm_hex(shift_val));
+                                }
+                                catch (...) {
+                                    update_instructions.push_back("ror " + dst + ", " + k);
+                                }
                                 handled = true;
                             }
                             else if (rel.rhs.find("mem[") != std::string::npos) {
@@ -259,8 +351,10 @@ public:
                                 handled = true;
                             }
                             else {
-                                if (dst != rel.rhs) {
-                                    update_instructions.push_back("mov " + dst + ", " + rel.rhs);
+                                std::string src = rel.rhs;
+                                if (src.find("init_") == 0) src = src.substr(5);
+                                if (dst != src) {
+                                    update_instructions.push_back("mov " + dst + ", " + src);
                                 }
                                 if (rel.delta > 0) {
                                     update_instructions.push_back("add " + dst + ", " + imm_hex(rel.delta));
@@ -293,6 +387,7 @@ public:
             if (rel.valid && rel.lhs.find("mem[") == 0) {
                 std::string mem_addr = rel.lhs.substr(4, rel.lhs.size() - 5);
                 std::string src = rel.rhs;
+                if (src.find("init_") == 0) src = src.substr(5);
 
                 if (src.find("mem[") != std::string::npos) {
                     continue;
@@ -303,7 +398,6 @@ public:
                     instr = "mov [" + mem_addr + "], " + src;
                     update_instructions.push_back(instr);
                 }
-
             }
         }
 
